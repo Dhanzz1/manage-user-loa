@@ -300,6 +300,31 @@ function Test-LOADelegateIdentityMatch {
     $identityText.EndsWith("\$delegateAlias", [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Wait-LOAUserStateSnapshot {
+    param(
+        [Parameter(Mandatory)][string]$UserPrincipalName,
+        [Parameter(Mandatory)][scriptblock]$IsSatisfied,
+        [int]$MaxAttempts = 3,
+        [int]$DelaySeconds = 2,
+        [string]$WarningMessage = 'Mailbox state did not converge before the summary snapshot.'
+    )
+
+    $latestSnapshot = $null
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        $latestSnapshot = Invoke-LOAGetUserStateSnapshot -UserPrincipalName $UserPrincipalName
+        if (& $IsSatisfied $latestSnapshot) {
+            return $latestSnapshot
+        }
+
+        if ($attempt -lt $MaxAttempts) {
+            Start-Sleep -Seconds $DelaySeconds
+        }
+    }
+
+    Write-Host "  [WARN] $WarningMessage" -ForegroundColor Yellow
+    $latestSnapshot
+}
+
 function Get-UserStateSnapshot {
     param([Parameter(Mandatory)][string]$UserPrincipalName)
 
@@ -660,8 +685,8 @@ function Invoke-LOASaaSReactivation {
 function Start-UserLOA {
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
     param(
-        [Parameter(Mandatory)][string]$UserPrincipalName,
-        [string]$ManagerUPN,
+        [Parameter(Mandatory)][ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')][string]$UserPrincipalName,
+        [ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')][string]$ManagerUPN,
         [switch]$ForceOOO
     )
 
@@ -707,6 +732,9 @@ function Start-UserLOA {
     if (-not $existingStash -and $originalParentOU -eq $Script:Config.LOAOUDistinguishedName) {
         throw 'User is already in the LOA OU with no stashed origin. Investigate, then use End-UserLOA -TargetOU for the return.'
     }
+
+    $shouldWaitForExchangeConvergence = -not $WhatIfPreference
+    $expectedOOOState = $null
 
     try {
     if ($existingStash) {
@@ -776,6 +804,7 @@ function Start-UserLOA {
     # from being overwritten unless the operator explicitly uses -ForceOOO.
     switch (Resolve-OOOAction -Snapshot $before -ForceOOO:$ForceOOO) {
         'Set' {
+            $expectedOOOState = 'Enabled'
             if ($PSCmdlet.ShouldProcess($UserPrincipalName, 'Configure Out-of-Office')) {
                 # The same message is used internally and externally; ExternalAudience
                 # remains All per the established workflow.
@@ -801,9 +830,11 @@ $($before.DisplayName)
         }
         'ManualReview' {
             $context = Get-OOOManualReviewContext -Snapshot $before
+            $expectedOOOState = $before.OOOState
             Write-Host "  [ACTION REQUIRED] $context. Verify OOO manually and rerun with -ForceOOO if the LOA default should replace it." -ForegroundColor Yellow
         }
         'Skip' {
+            $expectedOOOState = $before.OOOState
             Write-Host '  [WARN] OOO state could not be read; leaving OOO unchanged.' -ForegroundColor Yellow
         }
     }
@@ -817,12 +848,22 @@ $($before.DisplayName)
     } finally {
 
     # ---- AFTER snapshot ----
-    # Brief pause for EXO read-after-write consistency. FullAccess and SendAs
-    # writes may not be immediately visible on all EXO backend nodes.
-    # Entra Connect sync (AD -> Entra ID) is separate and takes 2-30 minutes
-    # regardless of this sleep.
-    Start-Sleep -Seconds 2
-    $after = Invoke-LOAGetUserStateSnapshot -UserPrincipalName $UserPrincipalName
+    if ($shouldWaitForExchangeConvergence) {
+        $after = Wait-LOAUserStateSnapshot `
+            -UserPrincipalName $UserPrincipalName `
+            -IsSatisfied {
+                param($snapshot)
+
+                $hasFullAccess = @($snapshot.FullAccessGrants | Where-Object { Test-LOADelegateIdentityMatch -Identity $_ -DelegateUPN $ManagerUPN }).Count -gt 0
+                $hasSendAs = @($snapshot.SendAsGrants | Where-Object { Test-LOADelegateIdentityMatch -Identity $_ -DelegateUPN $ManagerUPN }).Count -gt 0
+                $oooMatches = if ($null -eq $expectedOOOState) { $true } else { $snapshot.OOOState -eq $expectedOOOState }
+
+                $hasFullAccess -and $hasSendAs -and $oooMatches
+            } `
+            -WarningMessage 'Mailbox delegation or OOO state did not converge before the post-LOA summary snapshot.'
+    } else {
+        $after = Invoke-LOAGetUserStateSnapshot -UserPrincipalName $UserPrincipalName
+    }
     Show-UserSummary -Label 'AFTER - Post-LOA state' -Snapshot $after
 
     # Print the exact End command with the same UPNs used in this run so the
@@ -875,8 +916,8 @@ $($before.DisplayName)
 function End-UserLOA {
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
     param(
-        [Parameter(Mandatory)][string]$UserPrincipalName,
-        [Parameter(Mandatory)][string]$ManagerUPN,
+        [Parameter(Mandatory)][ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')][string]$UserPrincipalName,
+        [Parameter(Mandatory)][ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')][string]$ManagerUPN,
         [string]$TargetOU
     )
 
@@ -909,6 +950,8 @@ function End-UserLOA {
     Show-UserSummary -Label 'BEFORE - Current LOA state' -Snapshot $before
 
     Write-Host ''
+
+    $shouldWaitForExchangeConvergence = -not $WhatIfPreference
 
     try {
     # 1. Enable account.
@@ -1017,12 +1060,21 @@ function End-UserLOA {
     } finally {
 
     # ---- AFTER snapshot ----
-    # Brief pause for EXO read-after-write consistency. FullAccess and SendAs
-    # writes may not be immediately visible on all EXO backend nodes.
-    # Entra Connect sync (AD -> Entra ID) is separate and takes 2-30 minutes
-    # regardless of this sleep.
-    Start-Sleep -Seconds 2
-    $after = Invoke-LOAGetUserStateSnapshot -UserPrincipalName $UserPrincipalName
+    if ($shouldWaitForExchangeConvergence) {
+        $after = Wait-LOAUserStateSnapshot `
+            -UserPrincipalName $UserPrincipalName `
+            -IsSatisfied {
+                param($snapshot)
+
+                $hasFullAccess = @($snapshot.FullAccessGrants | Where-Object { Test-LOADelegateIdentityMatch -Identity $_ -DelegateUPN $ManagerUPN }).Count -gt 0
+                $hasSendAs = @($snapshot.SendAsGrants | Where-Object { Test-LOADelegateIdentityMatch -Identity $_ -DelegateUPN $ManagerUPN }).Count -gt 0
+
+                (-not $hasFullAccess) -and (-not $hasSendAs) -and ($snapshot.OOOState -eq 'Disabled')
+            } `
+            -WarningMessage 'Mailbox delegation removal or OOO disablement did not converge before the restored-state summary snapshot.'
+    } else {
+        $after = Invoke-LOAGetUserStateSnapshot -UserPrincipalName $UserPrincipalName
+    }
     Show-UserSummary -Label 'AFTER - Restored state' -Snapshot $after
 
     Write-Host ''

@@ -33,6 +33,28 @@ Describe 'Manage-UserLOA public module' {
         Assert-Equal -Actual $actual -Expected 'High' -Message 'End-UserLOA should use high confirmation impact.'
     }
 
+    It 'rejects an invalid Start-UserLOA user principal name before execution' {
+        $actualMessage = $null
+        try {
+            Start-UserLOA -UserPrincipalName 'not-a-upn' -ManagerUPN 'john.smith@yourdomain.com' -WhatIf
+        } catch {
+            $actualMessage = $_.Exception.Message
+        }
+
+        Assert-Equal -Actual ($actualMessage -like '*Cannot validate argument*UserPrincipalName*') -Expected $true -Message 'Start-UserLOA should reject malformed user principal names at parameter binding time.'
+    }
+
+    It 'rejects an invalid End-UserLOA manager principal name before execution' {
+        $actualMessage = $null
+        try {
+            End-UserLOA -UserPrincipalName 'jane.doe@yourdomain.com' -ManagerUPN 'not-a-upn' -WhatIf
+        } catch {
+            $actualMessage = $_.Exception.Message
+        }
+
+        Assert-Equal -Actual ($actualMessage -like '*Cannot validate argument*ManagerUPN*') -Expected $true -Message 'End-UserLOA should reject malformed manager principal names at parameter binding time.'
+    }
+
     It 'extracts the parent OU from a standard DN' {
         $actual = & $module { Get-ParentOU 'CN=Jane Doe,OU=Users,DC=yourdomain,DC=com' }
         Assert-Equal -Actual $actual -Expected 'OU=Users,DC=yourdomain,DC=com' -Message 'Parent OU extraction should strip the CN from a standard DN.'
@@ -136,5 +158,62 @@ Describe 'Manage-UserLOA public module' {
     It 'preserves absolute endpoints as-is' {
         $actual = & $module { Join-LOAApiUrl -BaseUrl 'https://yourdomain.com' -Endpoint 'https://api.example.com/users' }
         Assert-Equal -Actual $actual -Expected 'https://api.example.com/users' -Message 'Absolute endpoints should be preserved as-is.'
+    }
+
+    It 'polls for a converged post-change snapshot instead of relying on a fixed delay' {
+        InModuleScope Manage-UserLOA {
+            $script:pollCount = 0
+            Mock Invoke-LOAGetUserStateSnapshot {
+                $script:pollCount++
+                if ($script:pollCount -eq 1) {
+                    return [pscustomobject]@{
+                        FullAccessGrants = @()
+                    }
+                }
+
+                return [pscustomobject]@{
+                    FullAccessGrants = @('john.smith@yourdomain.com')
+                }
+            }
+            Mock Start-Sleep {}
+
+            $result = Wait-LOAUserStateSnapshot `
+                -UserPrincipalName 'jane.doe@yourdomain.com' `
+                -IsSatisfied { param($snapshot) @($snapshot.FullAccessGrants) -contains 'john.smith@yourdomain.com' } `
+                -MaxAttempts 3 `
+                -DelaySeconds 2
+
+            if (@($result.FullAccessGrants)[0] -ne 'john.smith@yourdomain.com') {
+                throw 'The retry helper should return the first converged snapshot.'
+            }
+            Assert-MockCalled Invoke-LOAGetUserStateSnapshot -ModuleName Manage-UserLOA -Times 2 -Exactly -Scope It
+            Assert-MockCalled Start-Sleep -ModuleName Manage-UserLOA -Times 1 -Exactly -Scope It
+        }
+    }
+
+    It 'returns the latest snapshot and warns when convergence does not happen in time' {
+        InModuleScope Manage-UserLOA {
+            Mock Invoke-LOAGetUserStateSnapshot {
+                [pscustomobject]@{
+                    FullAccessGrants = @()
+                }
+            }
+            Mock Start-Sleep {}
+            Mock Write-Host {}
+
+            $result = Wait-LOAUserStateSnapshot `
+                -UserPrincipalName 'jane.doe@yourdomain.com' `
+                -IsSatisfied { param($snapshot) @($snapshot.FullAccessGrants) -contains 'john.smith@yourdomain.com' } `
+                -MaxAttempts 3 `
+                -DelaySeconds 2 `
+                -WarningMessage 'Mailbox state did not converge before the summary snapshot.'
+
+            if (@($result.FullAccessGrants).Count -ne 0) {
+                throw 'The retry helper should return the latest snapshot when convergence times out.'
+            }
+            Assert-MockCalled Invoke-LOAGetUserStateSnapshot -ModuleName Manage-UserLOA -Times 3 -Exactly -Scope It
+            Assert-MockCalled Start-Sleep -ModuleName Manage-UserLOA -Times 2 -Exactly -Scope It
+            Assert-MockCalled Write-Host -ModuleName Manage-UserLOA -Times 1 -Exactly -Scope It
+        }
     }
 }
