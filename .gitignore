@@ -1,0 +1,12 @@
+*.log
+*.csv
+*.json
+*.xml
+*.clixml
+*.bak
+*.tmp
+.env
+secrets.ps1
+config.local.ps1
+transcripts/
+output/
