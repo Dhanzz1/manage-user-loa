@@ -120,6 +120,7 @@ function global:Get-LOAFakeADUserByDN {
 
 function Register-LOAFakeTenantMocks {
     InModuleScope Manage-UserLOA {
+        Mock Import-LOAConfig { $Script:Config = $global:LOAFake.Config }
         Mock Connect-LOAServices {}
         Mock Write-Host {}
         Mock Start-Sleep {}

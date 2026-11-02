@@ -4,6 +4,7 @@ Import-Module "$PSScriptRoot\..\src\Manage-UserLOA\Manage-UserLOA.psd1"
 End-UserLOA `
     -UserPrincipalName 'jane.doe@yourdomain.com' `
     -ManagerUPN 'john.smith@yourdomain.com' `
+    -ConfigPath "$PSScriptRoot\config.local.psd1" `
     -WhatIf
 
 # Example using an explicit return OU instead of the stashed original OU.

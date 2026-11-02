@@ -14,7 +14,7 @@ This runbook is for operators executing the leave-of-absence workflow in a hybri
 - PowerShell 5.1 or later
 - `ActiveDirectory` module available
 - `ExchangeOnlineManagement` module available
-- Correct values in `$Script:Config`
+- A valid config `.psd1` (see the README Configuration section)
 - AD rights to update the target user and move the object between OUs
 - Exchange Online rights to manage mailbox delegation and automatic replies
 - A non-production user for first-time validation
@@ -22,7 +22,7 @@ This runbook is for operators executing the leave-of-absence workflow in a hybri
 ## Pre-Run Safety Checks
 
 1. Confirm the target user is the correct person and not already mid-way through another identity change.
-2. Review `$Script:Config` for:
+2. Review the config file for:
    - `LOAOUDistinguishedName`
    - `DomainController`
    - `OUStashAttribute`

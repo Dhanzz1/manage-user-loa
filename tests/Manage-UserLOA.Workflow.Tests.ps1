@@ -26,6 +26,13 @@ function Set-WorkflowTestState {
 
 function Initialize-CommonWorkflowMocks {
     InModuleScope Manage-UserLOA {
+        Mock Import-LOAConfig {
+            $Script:Config = @{
+                LOAOUDistinguishedName = 'OU=Users on Temporary Leave,OU=Corporate,DC=yourdomain,DC=com'
+                DomainController       = 'DC01.yourdomain.com'
+                OUStashAttribute       = 'extensionAttribute10'
+            }
+        }
         Mock Connect-LOAServices {}
         Mock Assert-LOAOrganizationalUnit {}
         Mock Show-UserSummary {}

@@ -4,21 +4,16 @@
 # See README.md for prerequisites and usage.
 
 # ---------------------------------------------------------------------------
-# Configuration - set this to your domain
+# Configuration
 # ---------------------------------------------------------------------------
-# These values are intentionally kept in one hashtable so operators can adjust
-# environment-specific settings without hunting through the workflow code.
-$Script:Config = @{
-    # Disabled users are moved here during LOA.
-    LOAOUDistinguishedName = 'OU=Users on Temporary Leave,OU=Corporate,DC=yourdomain,DC=com'
-    # All AD reads/writes are pinned to this DC for consistent results.
-    DomainController       = 'YOURDC.yourdomain.com'
-    # OUStashAttribute uses extensionAttribute10 by default. Check that this
-    # attribute is not already in use in your environment (for example, by
-    # licence automation or an HR sync) before deploying. Change it to any free
-    # extensionAttribute (1-15) that your org has not claimed.
-    OUStashAttribute       = 'extensionAttribute10'
-}
+# Environment-specific settings live in a .psd1 file, loaded by
+# Import-LOAConfig at the start of each public command. See
+# examples\config.example.psd1 for the keys.
+$Script:Config = $null
+
+# Keys Import-LOAConfig recognises. Anything else in the file is warned about,
+# which catches settings left over from older versions.
+$Script:LOAKnownConfigKeys = @('LOAOUDistinguishedName', 'DomainController', 'OUStashAttribute')
 
 # ---------------------------------------------------------------------------
 # External command wrappers
@@ -199,6 +194,78 @@ function Invoke-LOAGetUserStateSnapshot {
 }
 
 # ---------------------------------------------------------------------------
+# Config loading
+# ---------------------------------------------------------------------------
+
+function Resolve-LOAConfigPath {
+    param([string]$ConfigPath)
+
+    # Explicit parameter, then environment variable, then the machine-wide
+    # default. Existence is checked by Import-LOAConfig.
+    if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) { return $ConfigPath }
+    if (-not [string]::IsNullOrWhiteSpace($env:MANAGE_USERLOA_CONFIG)) { return $env:MANAGE_USERLOA_CONFIG }
+    Join-Path $env:ProgramData 'Manage-UserLOA\config.psd1'
+}
+
+function Test-LOAConfig {
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    # Collect every problem so the operator can fix the file in one pass.
+    $problems = @()
+    foreach ($key in @('LOAOUDistinguishedName', 'DomainController', 'OUStashAttribute')) {
+        if (-not $Config.ContainsKey($key) -or [string]::IsNullOrWhiteSpace([string]$Config[$key])) {
+            $problems += "Missing required key '$key'"
+        }
+    }
+
+    $stash = $Config['OUStashAttribute']
+    if ($null -ne $stash -and -not ($stash -is [string] -and $stash -match '^extensionAttribute([1-9]|1[0-5])$')) {
+        $problems += "OUStashAttribute must be extensionAttribute1 to extensionAttribute15 (found '$stash')"
+    }
+
+    $loaOU = $Config['LOAOUDistinguishedName']
+    if (-not [string]::IsNullOrWhiteSpace([string]$loaOU) -and -not ($loaOU -is [string] -and $loaOU -match '^(OU|CN)=')) {
+        $problems += "LOAOUDistinguishedName must be a distinguished name starting with OU= or CN= (found '$loaOU')"
+    }
+
+    $dc = $Config['DomainController']
+    if ($null -ne $dc -and $dc -isnot [string]) {
+        $problems += 'DomainController must be a string'
+    }
+
+    $problems
+}
+
+function Import-LOAConfig {
+    param([string]$ConfigPath)
+
+    $path = Resolve-LOAConfigPath -ConfigPath $ConfigPath
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        $defaultPath = Join-Path $env:ProgramData 'Manage-UserLOA\config.psd1'
+        throw "Config file not found: $path. Pass -ConfigPath, set MANAGE_USERLOA_CONFIG, or create $defaultPath."
+    }
+
+    try {
+        $config = Import-PowerShellDataFile -Path $path -ErrorAction Stop
+    } catch {
+        throw "Config file '$path' could not be read: $($_.Exception.Message)"
+    }
+
+    $problems = @(Test-LOAConfig -Config $config)
+    if ($problems.Count -gt 0) {
+        throw ("Config file '$path' is invalid:" + (($problems | ForEach-Object { "`n - $_" }) -join ''))
+    }
+
+    foreach ($key in $config.Keys) {
+        if ($Script:LOAKnownConfigKeys -notcontains $key) {
+            Write-Warning "Unknown config key '$key' in $path is ignored."
+        }
+    }
+
+    $Script:Config = $config
+}
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -206,7 +273,7 @@ function Connect-LOAServices {
     # Fail early if the target DC is not reachable. Most of the script depends
     # on AD, so this gives a clearer error than several later command failures.
     if (-not (Test-Connection -ComputerName $Script:Config.DomainController -Count 1 -Quiet -ErrorAction SilentlyContinue)) {
-        throw "Domain controller '$($Script:Config.DomainController)' is not reachable. Check connectivity or update Script:Config.DomainController."
+        throw "Domain controller '$($Script:Config.DomainController)' is not reachable. Check connectivity or update DomainController in the config file."
     }
 
     # Load the modules only if they are not already available in the session.
@@ -558,6 +625,10 @@ function Show-UserSummary {
 .PARAMETER ForceOOO
     Overrides the OOO safety check and applies the default OOO message.
 
+.PARAMETER ConfigPath
+    Path to the config .psd1. Defaults to $env:MANAGE_USERLOA_CONFIG, then
+    $env:ProgramData\Manage-UserLOA\config.psd1.
+
 .EXAMPLE
     Start-UserLOA -UserPrincipalName 'jane.doe@yourdomain.com' -WhatIf
 
@@ -569,8 +640,12 @@ function Start-UserLOA {
     param(
         [Parameter(Mandatory)][ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')][string]$UserPrincipalName,
         [ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')][string]$ManagerUPN,
-        [switch]$ForceOOO
+        [switch]$ForceOOO,
+        [string]$ConfigPath
     )
+
+    # Load and validate config before connecting, so a bad file fails fast.
+    Import-LOAConfig -ConfigPath $ConfigPath
 
     # Connect to AD and Exchange before doing any lookups or changes.
     Connect-LOAServices
@@ -781,6 +856,10 @@ $($before.DisplayName)
     Optional override OU for the return move. If omitted, the stashed original
     OU is used.
 
+.PARAMETER ConfigPath
+    Path to the config .psd1. Defaults to $env:MANAGE_USERLOA_CONFIG, then
+    $env:ProgramData\Manage-UserLOA\config.psd1.
+
 .EXAMPLE
     End-UserLOA -UserPrincipalName 'jane.doe@yourdomain.com' -ManagerUPN 'john.smith@yourdomain.com' -WhatIf
 
@@ -792,8 +871,11 @@ function End-UserLOA {
     param(
         [Parameter(Mandatory)][ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')][string]$UserPrincipalName,
         [Parameter(Mandatory)][ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')][string]$ManagerUPN,
-        [string]$TargetOU
+        [string]$TargetOU,
+        [string]$ConfigPath
     )
+
+    Import-LOAConfig -ConfigPath $ConfigPath
 
     # End needs the same AD and EXO connections as Start because it reverses
     # both directory and mailbox changes.

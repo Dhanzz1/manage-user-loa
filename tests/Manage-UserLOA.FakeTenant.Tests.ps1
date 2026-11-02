@@ -17,7 +17,6 @@ Import-Module $modulePath -Force | Out-Null
 function Initialize-FakeTenantTest {
     New-LOAFakeTenant
     Register-LOAFakeTenantMocks
-    & (Get-Module Manage-UserLOA) { $Script:Config = $global:LOAFake.Config }
 }
 
 Describe 'Manage-UserLOA against the fake tenant' {

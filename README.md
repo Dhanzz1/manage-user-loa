@@ -57,17 +57,23 @@ For repeated use, place the `Manage-UserLOA` folder under a path listed in `$env
 
 ## Configuration
 
-Edit `$Script:Config` in [Manage-UserLOA.psm1](src/Manage-UserLOA/Manage-UserLOA.psm1) before use.
+Settings live in a `.psd1` file. Both commands load it first and stop before connecting to anything if it is missing or invalid. The file is found in this order:
 
-| Key | Type | Default | Description |
+1. `-ConfigPath` on `Start-UserLOA` or `End-UserLOA`
+2. The `MANAGE_USERLOA_CONFIG` environment variable
+3. `$env:ProgramData\Manage-UserLOA\config.psd1`
+
+Start from [config.example.psd1](examples/config.example.psd1). A local copy named `config.local.psd1` is git-ignored.
+
+| Key | Required | Example | Description |
 | --- | --- | --- | --- |
-| `LOAOUDistinguishedName` | string | `OU=Users on Temporary Leave,OU=Corporate,DC=yourdomain,DC=com` | OU where disabled LOA users are moved |
-| `DomainController` | string | `YOURDC.yourdomain.com` | Domain controller used for AD reads and writes |
-| `OUStashAttribute` | string | `extensionAttribute10` | AD attribute used to store the original parent OU |
+| `LOAOUDistinguishedName` | yes | `OU=Users on Temporary Leave,OU=Corporate,DC=yourdomain,DC=com` | OU where disabled LOA users are moved. Must start with `OU=` or `CN=` |
+| `DomainController` | yes | `YOURDC.yourdomain.com` | Domain controller used for AD reads and writes |
+| `OUStashAttribute` | yes | `extensionAttribute10` | AD attribute used to store the original parent OU. Must be `extensionAttribute1` to `extensionAttribute15` |
 
-Check that `OUStashAttribute` is not already used in your environment before deploying.
+Validation reports every problem in the file at once. Unknown keys, such as settings from older versions, produce a warning and are ignored.
 
-For a placeholder configuration template, see [config.example.ps1](examples/config.example.ps1).
+Check that `OUStashAttribute` is not already used in your environment before deploying. Never put secrets in the config file.
 
 ## Usage Examples
 
@@ -97,7 +103,7 @@ Additional example scripts:
 
 - [start-loa.example.ps1](examples/start-loa.example.ps1)
 - [end-loa.example.ps1](examples/end-loa.example.ps1)
-- [config.example.ps1](examples/config.example.ps1)
+- [config.example.psd1](examples/config.example.psd1)
 
 ## Workflow Diagram
 
