@@ -150,14 +150,12 @@ Describe 'Manage-UserLOA public module' {
         Assert-Equal -Actual $actual -Expected 'OOO is already enabled' -Message 'Enabled OOO should describe the manual-review reason.'
     }
 
-    It 'joins a base URL and relative endpoint cleanly' {
-        $actual = & $module { Join-LOAApiUrl -BaseUrl 'https://yourdomain.com/' -Endpoint '/api/users' }
-        Assert-Equal -Actual $actual -Expected 'https://yourdomain.com/api/users' -Message 'Relative API endpoints should join cleanly.'
-    }
-
-    It 'preserves absolute endpoints as-is' {
-        $actual = & $module { Join-LOAApiUrl -BaseUrl 'https://yourdomain.com' -Endpoint 'https://api.example.com/users' }
-        Assert-Equal -Actual $actual -Expected 'https://api.example.com/users' -Message 'Absolute endpoints should be preserved as-is.'
+    It 'no longer ships the Google Workspace or Generic REST connectors' {
+        $removed = @('Join-LOAApiUrl', 'Invoke-LOAGoogleWorkspaceSuspension', 'Invoke-LOAGenericSaaSAction', 'Invoke-LOASaaSDeactivation', 'Invoke-LOASaaSReactivation')
+        foreach ($name in $removed) {
+            $command = & $module { param($n) Get-Command $n -ErrorAction SilentlyContinue } $name
+            Assert-Equal -Actual ($null -eq $command) -Expected $true -Message "$name should no longer exist in the module."
+        }
     }
 
     It 'polls for a converged post-change snapshot instead of relying on a fixed delay' {

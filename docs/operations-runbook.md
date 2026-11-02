@@ -8,7 +8,6 @@ This runbook is for operators executing the leave-of-absence workflow in a hybri
 
 - Standard LOA start and return workflow
 - Hybrid AD and Exchange Online environments
-- Optional SaaS connector hooks when they are explicitly enabled
 
 ## Prerequisites
 
@@ -27,7 +26,6 @@ This runbook is for operators executing the leave-of-absence workflow in a hybri
    - `LOAOUDistinguishedName`
    - `DomainController`
    - `OUStashAttribute`
-   - any enabled SaaS settings
 3. Confirm the manager UPN is correct if you plan to override the AD manager.
 4. Run the command with `-WhatIf` first.
 5. Tell the ticket that mailbox delegation and OOO may need manual review if the user already has custom settings.
@@ -50,7 +48,6 @@ Expected workflow:
 - user is moved into the LOA OU
 - mailbox `FullAccess` and `SendAs` are granted to the manager when not already present
 - OOO is set or flagged for manual review
-- optional SaaS deactivation runs if enabled
 
 Capture in the ticket:
 
@@ -77,7 +74,6 @@ Expected workflow:
 - stash attribute is cleared only after a successful move
 - mailbox delegation is removed
 - OOO is disabled
-- optional SaaS reactivation runs if enabled
 
 Capture in the ticket:
 
@@ -103,5 +99,4 @@ Capture in the ticket:
 - OOO is already enabled or already scheduled
 - mailbox delegation was already present before LOA started
 - GAL hiding was already set before LOA started
-- SaaS connector actions fail or are disabled
 - target return OU is intentionally different from the stashed OU

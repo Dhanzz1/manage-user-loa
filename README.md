@@ -22,7 +22,6 @@ This module turns the workflow into a repeatable, operator-driven process with b
 - Grant and remove manager mailbox `FullAccess` and `SendAs`
 - Apply or remove OOO based on workflow rules
 - Print before-and-after summaries for ticket notes
-- Provide optional disabled-by-default Google Workspace and generic REST connector patterns
 - Support `-WhatIf` and confirmation prompts on the public commands
 
 ## Repository Layout
@@ -66,8 +65,6 @@ Edit `$Script:Config` in [Manage-UserLOA.psm1](src/Manage-UserLOA/Manage-UserLOA
 | `DomainController` | string | `YOURDC.yourdomain.com` | Domain controller used for AD reads and writes |
 | `OUStashAttribute` | string | `extensionAttribute10` | AD attribute used to store the original parent OU |
 | `OOOSchedulingThreshold` | integer | `24` | Threshold in hours that triggers manual OOO review |
-| `GoogleEnabled` | boolean | `$false` | Enables the Google Workspace connector |
-| `GenericSaaSEnabled` | boolean | `$false` | Enables the generic REST connector |
 
 Check that `OUStashAttribute` is not already used in your environment before deploying.
 
@@ -114,8 +111,7 @@ flowchart TD
     E --> F[Move user to LOA OU]
     F --> G[Grant manager mailbox access]
     G --> H[Set OOO when allowed]
-    H --> I[Run optional SaaS deactivation]
-    I --> J[Capture AFTER snapshot and print return command]
+    H --> J[Capture AFTER snapshot and print return command]
 
     K[End-UserLOA] --> L[Connect to AD and Exchange Online]
     L --> M[Capture BEFORE snapshot]
@@ -125,8 +121,7 @@ flowchart TD
     P --> Q[Clear stashed OU after successful move]
     Q --> R[Remove manager mailbox access]
     R --> S[Disable OOO]
-    S --> T[Run optional SaaS reactivation]
-    T --> U[Capture AFTER snapshot]
+    S --> U[Capture AFTER snapshot]
 ```
 
 ## Safety Controls
@@ -136,24 +131,12 @@ flowchart TD
 - Both workflows print before-and-after summaries for the ticket
 - The public commands support `-WhatIf` and `-Confirm`
 - `Start-UserLOA` and `End-UserLOA` use high confirmation impact
-- SaaS connector failures are non-blocking for the core AD and Exchange workflow
-- Manual-review limitations are documented for pre-existing GAL hiding, mailbox permissions, OOO settings, and SaaS-specific state
-
-## SaaS Integration Notes
-
-The module includes optional patterns for:
-
-- Google Workspace
-- Generic REST APIs
-
-These connectors are disabled by default. They show where the workflow can be extended to non-Microsoft SaaS tools without prescribing a single production integration model.
-
-For real deployments, keep secrets out of the module and use SecretManagement, Azure Key Vault, environment variables, or another approved enterprise secrets platform.
+- Manual-review limitations are documented for pre-existing GAL hiding, mailbox permissions, and OOO settings
 
 ## Testing Status
 
 - Offline helper, metadata, and mocked workflow tests passed with Pester on June 27, 2026
-- Live AD, Exchange Online, and SaaS validation remains manual
+- Live AD and Exchange Online validation remains manual
 
 See:
 
@@ -162,9 +145,9 @@ See:
 
 ## Rollback And Limitations
 
-The module is designed around a reversible standard workflow, not a perfect historical rollback. It restores the common LOA changes: account enabled state, GAL visibility, OU location, manager mailbox delegation, OOO state, and any enabled SaaS connector patterns.
+The module is designed around a reversible standard workflow, not a perfect historical rollback. It restores the common LOA changes: account enabled state, GAL visibility, OU location, manager mailbox delegation, and OOO state.
 
-It does not preserve every pre-existing value. Existing mailbox permissions, existing GAL hiding, pre-existing OOO state, or SaaS application-specific state may require manual review and operator judgment.
+It does not preserve every pre-existing value. Existing mailbox permissions, existing GAL hiding, or pre-existing OOO state may require manual review and operator judgment.
 
 ## License
 

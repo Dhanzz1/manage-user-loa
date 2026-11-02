@@ -7,7 +7,7 @@ This repository includes two offline Pester layers for the public module: determ
 - Helper and metadata tests are intended to run without a live Active Directory or Exchange Online connection.
 - Mocked workflow tests validate the AD / Exchange orchestration path without requiring a live tenant.
 - Together, the offline suites validate internal string handling, decision logic, confirmation behavior, and the main Start / End workflow command flow.
-- Live workflow validation for AD, Exchange Online, and optional SaaS integrations remains manual and should be tracked in [docs/testing.md](../docs/testing.md).
+- Live workflow validation for AD and Exchange Online remains manual and should be tracked in [docs/testing.md](../docs/testing.md).
 
 ## Running tests
 

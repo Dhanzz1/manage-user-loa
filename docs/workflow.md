@@ -27,11 +27,6 @@
 - Grants the manager `FullAccess` and `SendAs` when not already present.
 - Applies the default OOO message when the OOO safety logic allows it.
 
-### Optional SaaS behavior
-
-- Runs any enabled SaaS connector patterns after the AD and Exchange actions.
-- Connector failures are reported but do not stop the core LOA workflow.
-
 ### Final output
 
 - Captures an after snapshot.
@@ -62,11 +57,6 @@
 - Removes the manager's `FullAccess` and `SendAs`.
 - Disables OOO.
 
-### Optional SaaS behavior
-
-- Runs any enabled SaaS reactivation connector patterns after the core return workflow.
-- Connector failures are reported without blocking the AD or Exchange restoration path.
-
 ### Final output
 
 - Captures an after snapshot.
@@ -76,4 +66,4 @@
 
 - Both public commands support `-WhatIf` and `-Confirm`.
 - Both public commands use `ConfirmImpact = 'High'` because they make user-impacting identity changes.
-- The workflow is reversible for the standard LOA path, but it does not promise perfect restoration of every pre-existing mailbox, GAL, or SaaS state.
+- The workflow is reversible for the standard LOA path, but it does not promise perfect restoration of every pre-existing mailbox or GAL state.

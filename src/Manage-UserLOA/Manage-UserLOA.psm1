@@ -20,19 +20,6 @@ $Script:Config = @{
     OUStashAttribute       = 'extensionAttribute10'
     # Scheduled OOO starting within this many hours needs human review.
     OOOSchedulingThreshold = 24
-
-    # SaaS - Google Workspace (set GoogleEnabled to $true to activate)
-    GoogleEnabled          = $false
-    GoogleServiceAccountToken = ''
-    GoogleDomain           = 'yourdomain.com'
-
-    # SaaS - Generic REST (set GenericSaaSEnabled to $true to activate)
-    GenericSaaSEnabled     = $false
-    GenericSaaSBaseUrl     = 'https://yourdomain.com'
-    GenericSaaSApiToken    = ''
-    GenericSaaSDeactivateEndpoint = '/api/users/{userPrincipalName}/deactivate'
-    GenericSaaSReactivateEndpoint = '/api/users/{userPrincipalName}/reactivate'
-    GenericSaaSMethod      = 'POST'
 }
 
 # ---------------------------------------------------------------------------
@@ -558,110 +545,6 @@ function Show-UserSummary {
     Write-Host $line -ForegroundColor Cyan
 }
 
-function Join-LOAApiUrl {
-    param(
-        [Parameter(Mandatory)][string]$BaseUrl,
-        [Parameter(Mandatory)][string]$Endpoint
-    )
-
-    if ($Endpoint -match '^https?://') { return $Endpoint }
-
-    "{0}/{1}" -f $BaseUrl.TrimEnd('/'), $Endpoint.TrimStart('/')
-}
-
-function Invoke-LOAGoogleWorkspaceSuspension {
-    param(
-        [Parameter(Mandatory)][string]$UserPrincipalName,
-        [Parameter(Mandatory)][bool]$Suspended
-    )
-
-    if (-not $Script:Config.GoogleEnabled) {
-        Write-Host '  [SKIP] Google Workspace: disabled in config' -ForegroundColor Yellow
-        return
-    }
-
-    if ([string]::IsNullOrWhiteSpace($Script:Config.GoogleServiceAccountToken) -or [string]::IsNullOrWhiteSpace($Script:Config.GoogleDomain)) {
-        Write-Host '  [ERR] Google Workspace: GoogleServiceAccountToken and GoogleDomain are required' -ForegroundColor Red
-        return
-    }
-
-    try {
-        $userKey = if ($UserPrincipalName -like '*@*') { $UserPrincipalName } else { "$UserPrincipalName@$($Script:Config.GoogleDomain)" }
-        $encodedUserKey = [System.Uri]::EscapeDataString($userKey)
-        $uri = "https://admin.googleapis.com/admin/directory/v1/users/$encodedUserKey"
-        $headers = @{
-            # NOTE: Production use requires a proper OAuth 2.0 token exchange using a
-            # service account with domain-wide delegation configured in the Google
-            # Admin Console. GoogleServiceAccountToken here represents the bearer token
-            # obtained from that exchange, not a static credential.
-            Authorization = "Bearer $($Script:Config.GoogleServiceAccountToken)"
-            Accept        = 'application/json'
-        }
-        $body = @{ suspended = $Suspended } | ConvertTo-Json
-
-        Invoke-RestMethod -Method Patch -Uri $uri -Headers $headers -ContentType 'application/json' -Body $body -ErrorAction Stop | Out-Null
-        $state = if ($Suspended) { 'suspended' } else { 'reactivated' }
-        Write-Host "  [OK] Google Workspace: $state $userKey" -ForegroundColor Green
-    } catch {
-        Write-Host "  [ERR] Google Workspace: suspension update failed: $($_.Exception.Message)" -ForegroundColor Red
-    }
-}
-
-function Invoke-LOAGenericSaaSAction {
-    param(
-        [Parameter(Mandatory)][string]$UserPrincipalName,
-        [Parameter(Mandatory)][ValidateSet('Deactivate', 'Reactivate')][string]$Action
-    )
-
-    if (-not $Script:Config.GenericSaaSEnabled) {
-        Write-Host '  [SKIP] Generic REST: disabled in config' -ForegroundColor Yellow
-        return
-    }
-
-    $endpoint = if ($Action -eq 'Deactivate') { $Script:Config.GenericSaaSDeactivateEndpoint } else { $Script:Config.GenericSaaSReactivateEndpoint }
-    if ([string]::IsNullOrWhiteSpace($Script:Config.GenericSaaSBaseUrl) -or [string]::IsNullOrWhiteSpace($endpoint)) {
-        Write-Host '  [ERR] Generic REST: GenericSaaSBaseUrl and the selected endpoint are required' -ForegroundColor Red
-        return
-    }
-
-    try {
-        $encodedUPN = [System.Uri]::EscapeDataString($UserPrincipalName)
-        $resolvedEndpoint = $endpoint.Replace('{userPrincipalName}', $encodedUPN).Replace('{upn}', $encodedUPN)
-        $uri = Join-LOAApiUrl -BaseUrl $Script:Config.GenericSaaSBaseUrl -Endpoint $resolvedEndpoint
-        $method = if ([string]::IsNullOrWhiteSpace($Script:Config.GenericSaaSMethod)) { 'POST' } else { $Script:Config.GenericSaaSMethod }
-        $headers = @{ Accept = 'application/json' }
-        if (-not [string]::IsNullOrWhiteSpace($Script:Config.GenericSaaSApiToken)) {
-            $headers.Authorization = "Bearer $($Script:Config.GenericSaaSApiToken)"
-        }
-
-        # Generic REST is a template. Replace this endpoint and payload shape
-        # with the contract required by your own SaaS tool.
-        $body = @{
-            userPrincipalName = $UserPrincipalName
-            action            = $Action.ToLowerInvariant()
-        } | ConvertTo-Json
-
-        Invoke-RestMethod -Method $method -Uri $uri -Headers $headers -ContentType 'application/json' -Body $body -ErrorAction Stop | Out-Null
-        Write-Host "  [OK] Generic REST: $Action completed for $UserPrincipalName" -ForegroundColor Green
-    } catch {
-        Write-Host "  [ERR] Generic REST: $Action failed: $($_.Exception.Message)" -ForegroundColor Red
-    }
-}
-
-function Invoke-LOASaaSDeactivation {
-    param([Parameter(Mandatory)][string]$UserPrincipalName)
-
-    Invoke-LOAGoogleWorkspaceSuspension -UserPrincipalName $UserPrincipalName -Suspended $true
-    Invoke-LOAGenericSaaSAction -UserPrincipalName $UserPrincipalName -Action Deactivate
-}
-
-function Invoke-LOASaaSReactivation {
-    param([Parameter(Mandatory)][string]$UserPrincipalName)
-
-    Invoke-LOAGoogleWorkspaceSuspension -UserPrincipalName $UserPrincipalName -Suspended $false
-    Invoke-LOAGenericSaaSAction -UserPrincipalName $UserPrincipalName -Action Reactivate
-}
-
 # ---------------------------------------------------------------------------
 # Start LOA
 # ---------------------------------------------------------------------------
@@ -673,8 +556,8 @@ function Invoke-LOASaaSReactivation {
 .DESCRIPTION
     Disables the on-premises AD account, hides the user from the GAL, moves
     the user into the configured LOA OU, grants mailbox access to the user's
-    manager, optionally sets the default OOO message, optionally deactivates
-    configured SaaS integrations, and prints before/after ticket summaries.
+    manager, optionally sets the default OOO message, and prints before/after
+    ticket summaries.
 
 .PARAMETER UserPrincipalName
     The UPN of the user entering leave.
@@ -847,13 +730,6 @@ $($before.DisplayName)
             Write-Host '  [WARN] OOO state could not be read; leaving OOO unchanged.' -ForegroundColor Yellow
         }
     }
-
-    # 6. Deactivate configured SaaS integrations.
-    # SaaS connectors are optional and disabled by default. Connector failures
-    # are reported but do not block the AD or Exchange LOA workflow.
-    if ($PSCmdlet.ShouldProcess($UserPrincipalName, 'Deactivate configured SaaS integrations')) {
-        Invoke-LOASaaSDeactivation -UserPrincipalName $UserPrincipalName
-    }
     } finally {
 
     # ---- AFTER snapshot ----
@@ -903,8 +779,7 @@ $($before.DisplayName)
 .DESCRIPTION
     Re-enables the on-premises AD account, restores GAL visibility, moves the
     user back to the stashed or supplied OU, removes manager mailbox access,
-    disables OOO, optionally reactivates configured SaaS integrations, and
-    prints before/after ticket summaries.
+    disables OOO, and prints before/after ticket summaries.
 
 .PARAMETER UserPrincipalName
     The UPN of the user returning from leave.
@@ -1058,13 +933,6 @@ function End-UserLOA {
         } catch {
             Write-Host "  [WARN] OOO disable failed: $($_.Exception.Message)" -ForegroundColor Yellow
         }
-    }
-
-    # 6. Reactivate configured SaaS integrations.
-    # SaaS connectors are optional and disabled by default. Connector failures
-    # are reported but do not block the AD or Exchange return workflow.
-    if ($PSCmdlet.ShouldProcess($UserPrincipalName, 'Reactivate configured SaaS integrations')) {
-        Invoke-LOASaaSReactivation -UserPrincipalName $UserPrincipalName
     }
     } finally {
 

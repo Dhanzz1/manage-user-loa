@@ -7,17 +7,6 @@ $exampleConfig = @{
     # Confirm this attribute is free in your environment before using it.
     OUStashAttribute            = 'extensionAttribute10'
     OOOSchedulingThreshold      = 24
-
-    GoogleEnabled               = $false
-    GoogleServiceAccountToken   = ''
-    GoogleDomain                = 'yourdomain.com'
-
-    GenericSaaSEnabled          = $false
-    GenericSaaSBaseUrl          = 'https://yourdomain.com'
-    GenericSaaSApiToken         = ''
-    GenericSaaSDeactivateEndpoint = '/api/users/{userPrincipalName}/deactivate'
-    GenericSaaSReactivateEndpoint = '/api/users/{userPrincipalName}/reactivate'
-    GenericSaaSMethod           = 'POST'
 }
 
 $exampleConfig

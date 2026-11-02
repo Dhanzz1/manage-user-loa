@@ -4,7 +4,7 @@
 
 - Offline helper, metadata, and mocked workflow orchestration tests passed with Pester on June 27, 2026.
 - Mocked workflow orchestration tests cover the module's AD and Exchange command flow without requiring a live tenant.
-- Live AD, Exchange Online, and optional SaaS integration validation has not been run in this workspace and remains manual.
+- Live AD and Exchange Online validation has not been run in this workspace and remains manual.
 
 ## Manual test matrix
 
@@ -19,7 +19,6 @@ These checks are still manual and have not been revalidated in a live lab or ten
 | Delegation removed on return | Manager access removed |
 | OOO configured when disabled | Default OOO applied |
 | Existing or soon-scheduled OOO | Manual review warning shown |
-| SaaS connector disabled | No SaaS call attempted |
 | Invalid user | Script exits safely with clear error |
 | Invalid target OU | Script exits before destructive changes |
 
@@ -33,7 +32,6 @@ The helper-focused Pester suite in [tests/Manage-UserLOA.Tests.ps1](../tests/Man
 - delegate identity matching
 - OOO decision logic
 - OOO manual review text
-- URL joining for generic REST connectors
 
 The mocked workflow suite in [tests/Manage-UserLOA.Workflow.Tests.ps1](../tests/Manage-UserLOA.Workflow.Tests.ps1) covers:
 
@@ -48,4 +46,4 @@ The mocked workflow suite in [tests/Manage-UserLOA.Workflow.Tests.ps1](../tests/
 2. Run `Start-UserLOA ... -WhatIf`.
 3. Run `End-UserLOA ... -WhatIf`.
 4. Execute against a non-production test user.
-5. Verify AD state, mailbox permissions, OOO state, and any enabled SaaS integrations.
+5. Verify AD state, mailbox permissions, and OOO state.
