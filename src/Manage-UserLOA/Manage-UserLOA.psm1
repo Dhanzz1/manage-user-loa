@@ -40,9 +40,9 @@ $Script:Config = @{
 # ---------------------------------------------------------------------------
 
 function Invoke-LOAGetADUser {
-    [CmdletBinding(DefaultParameterSetName = 'Filter')]
+    [CmdletBinding(DefaultParameterSetName = 'UserPrincipalName')]
     param(
-        [Parameter(ParameterSetName = 'Filter', Mandatory)][scriptblock]$Filter,
+        [Parameter(ParameterSetName = 'UserPrincipalName', Mandatory)][string]$UserPrincipalName,
         [Parameter(ParameterSetName = 'Identity', Mandatory)][string]$Identity,
         [string[]]$Properties,
         [string]$Server
@@ -53,7 +53,18 @@ function Invoke-LOAGetADUser {
         return
     }
 
-    Get-ADUser -Filter $Filter -Properties $Properties -Server $Server
+    # Scriptblock filters bind variables safely through the AD provider and
+    # avoid building a filter string by hand.
+    Get-ADUser -Filter { UserPrincipalName -eq $UserPrincipalName } -Properties $Properties -Server $Server
+}
+
+function Invoke-LOAGetADObject {
+    param(
+        [Parameter(Mandatory)][string]$Identity,
+        [string]$Server
+    )
+
+    Get-ADObject -Identity $Identity -Server $Server -ErrorAction Stop
 }
 
 function Invoke-LOASetADUser {
@@ -232,10 +243,8 @@ function Connect-LOAServices {
 function Get-LOAUser {
     param([Parameter(Mandatory)][string]$UserPrincipalName)
 
-    # Scriptblock filters bind variables safely through the AD provider and
-    # avoid building a filter string by hand.
     $props = @('DisplayName', 'EmailAddress', 'Manager', 'msExchHideFromAddressLists', $Script:Config.OUStashAttribute)
-    $adUser = Invoke-LOAGetADUser -Filter { UserPrincipalName -eq $UserPrincipalName } -Properties $props -Server $Script:Config.DomainController
+    $adUser = Invoke-LOAGetADUser -UserPrincipalName $UserPrincipalName -Properties $props -Server $Script:Config.DomainController
     if (-not $adUser) { throw "User $UserPrincipalName not found in AD" }
     if (@($adUser).Count -gt 1) { throw "Multiple AD users found for $UserPrincipalName" }
 
@@ -377,7 +386,7 @@ function Assert-LOAOrganizationalUnit {
     # Validate target OUs before moving users. Some default AD locations are
     # containers rather than OUs, so accept both object classes.
     try {
-        $target = Get-ADObject -Identity $DistinguishedName -Server $Script:Config.DomainController -ErrorAction Stop
+        $target = Invoke-LOAGetADObject -Identity $DistinguishedName -Server $Script:Config.DomainController
     } catch {
         throw "$Purpose OU/container not found or unreachable on $($Script:Config.DomainController): $DistinguishedName. $($_.Exception.Message)"
     }
@@ -706,7 +715,7 @@ function Start-UserLOA {
         $managerObj = Invoke-LOAGetADUser -Identity $adUser.Manager -Properties $managerProps -Server $Script:Config.DomainController
         $ManagerUPN = $managerObj.UserPrincipalName
     } else {
-        $managerObj = Invoke-LOAGetADUser -Filter { UserPrincipalName -eq $ManagerUPN } -Properties $managerProps -Server $Script:Config.DomainController
+        $managerObj = Invoke-LOAGetADUser -UserPrincipalName $ManagerUPN -Properties $managerProps -Server $Script:Config.DomainController
         if (-not $managerObj) { throw "Manager $ManagerUPN not found in AD" }
     }
 
