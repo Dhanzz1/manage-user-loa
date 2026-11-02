@@ -167,8 +167,7 @@ flowchart TD
 
 ## Testing Status
 
-- Offline helper, metadata, and mocked workflow tests passed with Pester on June 27, 2026
-- Live AD and Exchange Online validation remains manual
+I tested v1.0 against a production AD and Exchange Online environment. v1.1 and later are validated against a fake tenant in the test suite.
 
 See:
 
@@ -178,6 +177,8 @@ See:
 ## Rollback And Limitations
 
 The module is designed around a reversible standard workflow, not a perfect historical rollback. It restores the common LOA changes: account enabled state, GAL visibility, OU location, manager mailbox delegation, and OOO state.
+
+Revoked sign-in sessions cannot be restored. This is by design: the user simply signs in again after End.
 
 It does not preserve every pre-existing value. Existing mailbox permissions, existing GAL hiding, or pre-existing OOO state may require manual review and operator judgment.
 

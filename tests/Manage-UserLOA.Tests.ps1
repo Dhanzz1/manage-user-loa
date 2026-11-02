@@ -23,6 +23,11 @@ Describe 'Manage-UserLOA public module' {
     $modulePath = Join-Path $PSScriptRoot '..\src\Manage-UserLOA\Manage-UserLOA.psm1'
     $module = Import-Module $modulePath -Force -PassThru
 
+    It 'manifest version is 1.1.0' {
+        $manifest = Import-PowerShellDataFile (Join-Path $PSScriptRoot '..\src\Manage-UserLOA\Manage-UserLOA.psd1')
+        Assert-Equal -Actual $manifest.ModuleVersion -Expected '1.1.0' -Message 'The manifest should declare v1.1.0.'
+    }
+
     It 'uses high confirmation impact for Start-UserLOA' {
         $actual = ([System.Management.Automation.CommandMetadata](Get-Command Start-UserLOA)).ConfirmImpact
         Assert-Equal -Actual $actual -Expected 'High' -Message 'Start-UserLOA should use high confirmation impact.'
