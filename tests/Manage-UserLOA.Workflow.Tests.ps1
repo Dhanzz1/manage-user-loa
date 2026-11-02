@@ -34,6 +34,7 @@ function Initialize-CommonWorkflowMocks {
             }
         }
         Mock Connect-LOAServices {}
+        Mock Invoke-LOASessionRevoke {}
         Mock Assert-LOAOrganizationalUnit {}
         Mock Show-UserSummary {}
         Mock Show-LOAPreExistingWarnings {}

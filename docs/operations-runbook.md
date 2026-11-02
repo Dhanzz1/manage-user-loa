@@ -43,7 +43,9 @@ Then rerun without `-WhatIf` after review.
 Expected workflow:
 
 - original OU is stashed
+- user is added to the sign-in block group, if configured
 - AD account is disabled
+- Microsoft 365 sign-in sessions are revoked
 - GAL visibility is hidden
 - user is moved into the LOA OU
 - mailbox `FullAccess` and `SendAs` are granted to the manager when not already present
@@ -69,6 +71,7 @@ Then rerun without `-WhatIf` after review.
 Expected workflow:
 
 - AD account is enabled
+- user is removed from the sign-in block group, if configured
 - GAL visibility is restored
 - user is moved back to the stashed or supplied target OU
 - stash attribute is cleared only after a successful move
@@ -91,6 +94,12 @@ Capture in the ticket:
   - confirm the OU path and verify the configured domain controller can resolve it
 - EXO delegation or OOO warnings
   - core AD work may still succeed; review the warning and validate manually in Exchange
+- `Sign-in block group add failed`
+  - nothing after the OU stash was changed; check the Graph permissions and the group ID, then rerun Start
+- `Session revoke failed`
+  - the account is disabled but not moved or delegated; fix the cause and rerun Start, which continues from here
+- `Sign-in block group removal failed` on End
+  - remove the user from the group by hand in Entra
 - user already in the LOA OU with no stashed origin
   - stop and investigate before trying to force a normal return flow
 

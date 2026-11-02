@@ -13,4 +13,11 @@
     # licence automation or an HR sync) before deploying. Any free
     # extensionAttribute1 to extensionAttribute15 works.
     OUStashAttribute       = 'extensionAttribute10'
+
+    # Optional. Object ID of a cloud-only Entra security group that a
+    # Conditional Access policy blocks from all cloud apps. When set, Start adds
+    # the user to it before the AD disable so Microsoft 365 sign-in stops at
+    # once, and End removes them. Leave empty to rely on Entra Connect sync.
+    # See the README section "Cutting off Microsoft 365 sign-in".
+    SignInBlockGroupId     = ''
 }

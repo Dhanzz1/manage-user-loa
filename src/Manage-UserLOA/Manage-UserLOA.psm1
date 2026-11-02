@@ -13,7 +13,7 @@ $Script:Config = $null
 
 # Keys Import-LOAConfig recognises. Anything else in the file is warned about,
 # which catches settings left over from older versions.
-$Script:LOAKnownConfigKeys = @('LOAOUDistinguishedName', 'DomainController', 'OUStashAttribute')
+$Script:LOAKnownConfigKeys = @('LOAOUDistinguishedName', 'DomainController', 'OUStashAttribute', 'SignInBlockGroupId')
 
 # ---------------------------------------------------------------------------
 # External command wrappers
@@ -185,6 +185,60 @@ function Invoke-LOASetMailboxAutoReplyConfiguration {
         -ErrorAction Stop
 }
 
+function Invoke-LOAGetMgContext {
+    Get-MgContext
+}
+
+function Invoke-LOAConnectGraph {
+    param(
+        [Parameter(Mandatory)][string[]]$Scopes
+    )
+
+    Connect-MgGraph -Scopes $Scopes -NoWelcome -ErrorAction Stop
+}
+
+function Invoke-LOAGetMgUser {
+    param(
+        [Parameter(Mandatory)][string]$UserId
+    )
+
+    Get-MgUser -UserId $UserId -Property Id,AccountEnabled -ErrorAction Stop
+}
+
+function Invoke-LOARevokeSignInSession {
+    param(
+        [Parameter(Mandatory)][string]$UserId
+    )
+
+    Revoke-MgUserSignInSession -UserId $UserId -ErrorAction Stop
+}
+
+function Invoke-LOAGetGroupMember {
+    param(
+        [Parameter(Mandatory)][string]$GroupId
+    )
+
+    Get-MgGroupMember -GroupId $GroupId -All -ErrorAction Stop
+}
+
+function Invoke-LOAAddGroupMember {
+    param(
+        [Parameter(Mandatory)][string]$GroupId,
+        [Parameter(Mandatory)][string]$DirectoryObjectId
+    )
+
+    New-MgGroupMember -GroupId $GroupId -DirectoryObjectId $DirectoryObjectId -ErrorAction Stop
+}
+
+function Invoke-LOARemoveGroupMember {
+    param(
+        [Parameter(Mandatory)][string]$GroupId,
+        [Parameter(Mandatory)][string]$DirectoryObjectId
+    )
+
+    Remove-MgGroupMemberByRef -GroupId $GroupId -DirectoryObjectId $DirectoryObjectId -ErrorAction Stop
+}
+
 function Invoke-LOAGetUserStateSnapshot {
     param(
         [Parameter(Mandatory)][string]$UserPrincipalName
@@ -283,6 +337,11 @@ function Connect-LOAServices {
     if (-not (Get-Module ExchangeOnlineManagement)) {
         Import-Module ExchangeOnlineManagement -ErrorAction Stop
     }
+    foreach ($graphModule in @('Microsoft.Graph.Authentication', 'Microsoft.Graph.Users', 'Microsoft.Graph.Users.Actions', 'Microsoft.Graph.Groups')) {
+        if (-not (Get-Module $graphModule)) {
+            Import-Module $graphModule -ErrorAction Stop
+        }
+    }
 
     # Reuse an existing EXO session if one is already connected. -DisableWAM
     # avoids Windows Account Manager choosing the wrong cached Microsoft account.
@@ -290,6 +349,117 @@ function Connect-LOAServices {
     if (-not $exo) {
         Connect-ExchangeOnline -ShowBanner:$false -DisableWAM -ErrorAction Stop
     }
+
+    # Graph is used to cut off Microsoft 365 sign-in after the AD disable.
+    Connect-LOAGraph -RequiredScopes (Get-LOAGraphScopes)
+}
+
+function Get-LOAGraphScopes {
+    # Delegated scopes the operator consents to. GroupMember.ReadWrite.All is
+    # only requested when the sign-in block group is configured.
+    $scopes = @('User.Read.All', 'User.RevokeSessions.All')
+    if (-not [string]::IsNullOrWhiteSpace($Script:Config.SignInBlockGroupId)) {
+        $scopes += 'GroupMember.ReadWrite.All'
+    }
+    $scopes
+}
+
+function Connect-LOAGraph {
+    param([Parameter(Mandatory)][string[]]$RequiredScopes)
+
+    # Reuse the operator's existing Graph session when it already carries every
+    # scope we need. Graph can report scopes in a different case, so compare
+    # case-insensitively.
+    $context = Invoke-LOAGetMgContext
+    if ($context) {
+        $granted = @($context.Scopes | ForEach-Object { "$_".ToLowerInvariant() })
+        $missing = @($RequiredScopes | Where-Object { $granted -notcontains $_.ToLowerInvariant() })
+        if ($missing.Count -eq 0) { return }
+    }
+
+    Invoke-LOAConnectGraph -Scopes $RequiredScopes
+}
+
+function Get-LOAEntraUserId {
+    param([Parameter(Mandatory)][string]$UserPrincipalName)
+
+    (Invoke-LOAGetMgUser -UserId $UserPrincipalName).Id
+}
+
+function Test-LOARevokeResult {
+    param([AllowNull()]$Result)
+
+    # Revoke-MgUserSignInSession returns $true, or an object wrapping it in
+    # Value, depending on the Graph SDK version.
+    if ($Result -is [bool]) { return $Result }
+    if ($null -ne $Result -and $Result.PSObject.Properties['Value']) { return ($Result.Value -eq $true) }
+    $false
+}
+
+function Test-LOABlockGroupMember {
+    param([Parameter(Mandatory)][string]$UserId)
+
+    @(Invoke-LOAGetGroupMember -GroupId $Script:Config.SignInBlockGroupId | Where-Object { $_.Id -eq $UserId }).Count -gt 0
+}
+
+function Add-LOASignInBlock {
+    param([Parameter(Mandatory)][string]$UserPrincipalName)
+
+    # Membership of this cloud-only group is targeted by a Conditional Access
+    # "Block access" policy, so it stops new sign-ins without waiting for
+    # Entra Connect to sync the AD disable.
+    try {
+        $userId = Get-LOAEntraUserId -UserPrincipalName $UserPrincipalName
+        if (Test-LOABlockGroupMember -UserId $userId) {
+            Write-Host '  [SKIP] Already in sign-in block group' -ForegroundColor Yellow
+            return
+        }
+        Invoke-LOAAddGroupMember -GroupId $Script:Config.SignInBlockGroupId -DirectoryObjectId $userId
+    } catch {
+        throw "Sign-in block group add failed for ${UserPrincipalName}: $($_.Exception.Message.TrimEnd('.')). No account changes were made after the OU stash; fix the cause and rerun Start-UserLOA."
+    }
+    Write-Host '  [OK] Added to sign-in block group' -ForegroundColor Green
+}
+
+function Remove-LOASignInBlock {
+    param([Parameter(Mandatory)][string]$UserPrincipalName)
+
+    # The user is returning, so a failure here is reported for manual follow-up
+    # instead of stopping the rest of the return workflow.
+    try {
+        $userId = Get-LOAEntraUserId -UserPrincipalName $UserPrincipalName
+        if (-not (Test-LOABlockGroupMember -UserId $userId)) {
+            Write-Host '  [SKIP] Not in sign-in block group' -ForegroundColor Yellow
+            return
+        }
+        Invoke-LOARemoveGroupMember -GroupId $Script:Config.SignInBlockGroupId -DirectoryObjectId $userId
+        Write-Host '  [OK] Removed from sign-in block group' -ForegroundColor Green
+    } catch {
+        Write-Host "  [ERR] Sign-in block group removal failed: $($_.Exception.Message.TrimEnd('.')). Remove $UserPrincipalName from the group manually." -ForegroundColor Red
+    }
+}
+
+function Invoke-LOASessionRevoke {
+    param([Parameter(Mandatory)][string]$UserPrincipalName)
+
+    # Revoking refresh tokens forces every client to sign in again, which the
+    # AD disable (once synced) or the block group then refuses.
+    $result = $null
+    $failure = $null
+    try {
+        $userId = Get-LOAEntraUserId -UserPrincipalName $UserPrincipalName
+        $result = Invoke-LOARevokeSignInSession -UserId $userId
+    } catch {
+        $failure = $_.Exception.Message.TrimEnd('.')
+    }
+
+    if (-not $failure -and -not (Test-LOARevokeResult -Result $result)) {
+        $failure = 'unexpected result'
+    }
+    if ($failure) {
+        throw "Session revoke failed for ${UserPrincipalName}: $failure. The AD account is disabled but the user has not been moved or delegated; fix the cause and rerun Start-UserLOA."
+    }
+    Write-Host '  [OK] Microsoft 365 sign-in sessions revoked' -ForegroundColor Green
 }
 
 function Get-LOAUser {
@@ -703,7 +873,15 @@ function Start-UserLOA {
         Write-Host "  [OK] Original OU stashed: $originalParentOU" -ForegroundColor Green
     }
 
-    # 1. Disable account.
+    # 1. Block Microsoft 365 sign-in (optional).
+    # Runs before the AD disable so a Graph failure stops Start while the
+    # account is still untouched.
+    $hasBlockGroup = -not [string]::IsNullOrWhiteSpace($Script:Config.SignInBlockGroupId)
+    if ($hasBlockGroup -and $PSCmdlet.ShouldProcess($UserPrincipalName, 'Add to sign-in block group')) {
+        Add-LOASignInBlock -UserPrincipalName $UserPrincipalName
+    }
+
+    # 2. Disable account.
     # Disabling the AD account prevents sign-in while Entra Connect syncs the
     # authoritative on-prem state to Microsoft 365.
     if ($PSCmdlet.ShouldProcess($UserPrincipalName, 'Disable AD account')) {
@@ -711,7 +889,17 @@ function Start-UserLOA {
         Write-Host '  [OK] AD account disabled' -ForegroundColor Green
     }
 
-    # 2. Hide from GAL.
+    # 3. Revoke sign-in sessions.
+    # A failure here stops Start: the user is disabled but not yet moved or
+    # delegated, and a rerun picks up from this point.
+    if ($PSCmdlet.ShouldProcess($UserPrincipalName, 'Revoke Microsoft 365 sign-in sessions')) {
+        Invoke-LOASessionRevoke -UserPrincipalName $UserPrincipalName
+        if (-not $hasBlockGroup) {
+            Write-Host '  [WARN] No SignInBlockGroupId configured. The user can sign in to Microsoft 365 again until Entra Connect syncs the AD disable (about 30 minutes by default).' -ForegroundColor Yellow
+        }
+    }
+
+    # 4. Hide from GAL.
     # This sets the on-prem Exchange attribute that controls GAL visibility in
     # hybrid environments.
     if ($PSCmdlet.ShouldProcess($UserPrincipalName, 'Hide from GAL')) {
@@ -719,7 +907,7 @@ function Start-UserLOA {
         Write-Host '  [OK] Hidden from GAL' -ForegroundColor Green
     }
 
-    # 3. Move to LOA OU.
+    # 5. Move to LOA OU.
     # Refresh $adUser after the move because the distinguishedName changes.
     if ((Get-ParentOU -DistinguishedName $adUser.DistinguishedName) -eq $Script:Config.LOAOUDistinguishedName) {
         Write-Host '  [SKIP] Already in LOA OU' -ForegroundColor Yellow
@@ -729,7 +917,7 @@ function Start-UserLOA {
         $adUser = Get-LOAUser -UserPrincipalName $UserPrincipalName
     }
 
-    # 4. Delegate mailbox to manager.
+    # 6. Delegate mailbox to manager.
     # Permissions are checked before adding so reruns are mostly idempotent and
     # do not create duplicate grant attempts.
     if ($PSCmdlet.ShouldProcess($UserPrincipalName, "Delegate mailbox to $ManagerUPN")) {
@@ -756,7 +944,7 @@ function Start-UserLOA {
         }
     }
 
-    # 5. OOO decision.
+    # 7. OOO decision.
     # Resolve-OOOAction protects user-scheduled or already-enabled OOO messages
     # from being overwritten unless the operator explicitly uses -ForceOOO.
     switch (Resolve-OOOAction -Snapshot $before -ForceOOO:$ForceOOO) {
@@ -919,7 +1107,12 @@ function End-UserLOA {
         Write-Host '  [OK] AD account enabled' -ForegroundColor Green
     }
 
-    # 2. Unhide from GAL.
+    # 2. Remove from the sign-in block group (optional).
+    if (-not [string]::IsNullOrWhiteSpace($Script:Config.SignInBlockGroupId) -and $PSCmdlet.ShouldProcess($UserPrincipalName, 'Remove from sign-in block group')) {
+        Remove-LOASignInBlock -UserPrincipalName $UserPrincipalName
+    }
+
+    # 3. Unhide from GAL.
     # Clearing the attribute restores default GAL visibility.
     if (-not $adUser.msExchHideFromAddressLists) {
         Write-Host '  [SKIP] GAL visibility already restored' -ForegroundColor Yellow
@@ -928,7 +1121,7 @@ function End-UserLOA {
         Write-Host '  [OK] GAL visibility restored' -ForegroundColor Green
     }
 
-    # 3. Move to target OU.
+    # 4. Move to target OU.
     # Move back to the stashed or supplied OU, then refresh $adUser because the
     # distinguishedName changes after Move-ADObject.
     $moveCompleted = $false
@@ -949,7 +1142,7 @@ function End-UserLOA {
         Write-Host "  [OK] Cleared $($Script:Config.OUStashAttribute)" -ForegroundColor Green
     }
 
-    # 4. Remove mailbox delegation.
+    # 5. Remove mailbox delegation.
     # End removes the manager delegation that Start added. It uses full ACL reads
     # and the BEFORE snapshot fallback because EXO filtered permission lookups
     # can lag behind the visible ACL.
@@ -995,7 +1188,7 @@ function End-UserLOA {
         }
     }
 
-    # 5. Disable OOO.
+    # 6. Disable OOO.
     # Unconditional: clears both the LOA auto-reply and any user-managed OOO that may
     # be active. Confirm with the returning user if they had a personal OOO set.
     if ($PSCmdlet.ShouldProcess($UserPrincipalName, 'Disable Out-of-Office')) {

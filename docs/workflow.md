@@ -7,8 +7,9 @@
 ### Validation
 
 - Confirms the configured domain controller is reachable.
-- Loads the Active Directory and Exchange Online modules.
-- Reuses an existing Exchange Online session when possible.
+- Loads and validates the config file before connecting to anything.
+- Loads the Active Directory, Exchange Online and Microsoft Graph modules.
+- Reuses an existing Exchange Online session, and an existing Graph session that already has the needed scopes.
 - Looks up the user and validates the configured LOA OU or container.
 - Resolves the manager either from the supplied `ManagerUPN` or the user's AD manager.
 
@@ -21,7 +22,9 @@
 ### AD and Exchange changes
 
 - Stashes the original parent OU in the configured AD attribute.
+- Adds the user to the sign-in block group when `SignInBlockGroupId` is set. A failure stops Start before the account is touched.
 - Disables the AD account.
+- Revokes the user's Microsoft 365 sign-in sessions. A failure stops Start with the user disabled but not moved or delegated; rerun after fixing the cause. Without a block group, a warning notes the user can sign in again until Entra Connect syncs the disable.
 - Hides the user from the GAL.
 - Moves the user to the configured LOA OU.
 - Grants the manager `FullAccess` and `SendAs` when not already present.
@@ -39,7 +42,7 @@
 
 ### Validation
 
-- Loads the same AD and Exchange dependencies as the Start workflow.
+- Loads and validates the config, then the same AD, Exchange and Graph dependencies as the Start workflow.
 - Reads the stashed OU from the configured attribute unless a `TargetOU` override is supplied.
 - Validates the return OU or container before moving the user.
 
@@ -51,6 +54,7 @@
 ### AD and Exchange changes
 
 - Re-enables the AD account.
+- Removes the user from the sign-in block group when configured. A failure is reported for manual follow-up and does not stop End.
 - Restores GAL visibility.
 - Moves the user back to the stashed or supplied OU.
 - Clears the stashed OU only after the move succeeds.

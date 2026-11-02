@@ -8,6 +8,7 @@
 $Script:LOAFakeLeaveOU = 'OU=Users on Temporary Leave,OU=Corporate,DC=yourdomain,DC=com'
 $Script:LOAFakeSalesOU = 'OU=Sales,OU=Corporate,DC=yourdomain,DC=com'
 $Script:LOAFakeFinanceOU = 'OU=Finance,OU=Corporate,DC=yourdomain,DC=com'
+$Script:LOAFakeBlockGroupId = '11111111-1111-1111-1111-111111111111'
 
 function New-LOAFakeADUser {
     param(
@@ -64,6 +65,7 @@ function New-LOAFakeTenant {
             LOAOUDistinguishedName = $Script:LOAFakeLeaveOU
             DomainController       = 'DC01.yourdomain.com'
             OUStashAttribute       = 'extensionAttribute10'
+            SignInBlockGroupId     = $Script:LOAFakeBlockGroupId
         }
         OUs       = @{
             $Script:LOAFakeSalesOU   = 'organizationalUnit'
@@ -81,6 +83,24 @@ function New-LOAFakeTenant {
             'bob.lee@yourdomain.com'    = New-LOAFakeMailbox -FullAccess @('john.smith@yourdomain.com') -OOOState 'Enabled'
             'ana.ruiz@yourdomain.com'   = New-LOAFakeMailbox -FullAccess @('john.smith@yourdomain.com') -SendAs @('john.smith@yourdomain.com') -OOOState 'Enabled'
             'john.smith@yourdomain.com' = New-LOAFakeMailbox
+        }
+        Entra     = @{
+            Users        = @{
+                'jane.doe@yourdomain.com'   = @{ Id = 'aaaaaaaa-0000-0000-0000-000000000001'; AccountEnabled = $true }
+                'bob.lee@yourdomain.com'    = @{ Id = 'aaaaaaaa-0000-0000-0000-000000000002'; AccountEnabled = $true }
+                'ana.ruiz@yourdomain.com'   = @{ Id = 'aaaaaaaa-0000-0000-0000-000000000003'; AccountEnabled = $false }
+                'john.smith@yourdomain.com' = @{ Id = 'aaaaaaaa-0000-0000-0000-000000000004'; AccountEnabled = $true }
+            }
+            Groups       = @{
+                $Script:LOAFakeBlockGroupId = [System.Collections.ArrayList]@()
+            }
+            Revoked      = @{}
+            # What Revoke-MgUserSignInSession returns; tests swap in other shapes.
+            RevokeResult = $true
+        }
+        MgContext = [pscustomobject]@{
+            Account = 'operator@yourdomain.com'
+            Scopes  = @('User.Read.All', 'User.RevokeSessions.All', 'GroupMember.ReadWrite.All')
         }
         Faults    = @{}
         Calls     = [System.Collections.ArrayList]@()
@@ -108,6 +128,15 @@ function global:Find-LOAFakeADUser {
     }
 
     $global:LOAFake.ADUsers.Values | Where-Object { $_.DistinguishedName -eq $DistinguishedName } | Select-Object -First 1
+}
+
+function global:Get-LOAFakeEntraUpn {
+    param([Parameter(Mandatory)][string]$UserId)
+
+    foreach ($upn in $global:LOAFake.Entra.Users.Keys) {
+        if ($upn -eq $UserId -or $global:LOAFake.Entra.Users[$upn].Id -eq $UserId) { return $upn }
+    }
+    throw "Fake Entra: user not found: $UserId"
 }
 
 function global:Get-LOAFakeADUserByDN {
@@ -205,6 +234,47 @@ function Register-LOAFakeTenantMocks {
             $global:LOAFake.Mailboxes[$Identity].SendAs.Remove($Trustee)
         }
 
+        Mock Invoke-LOAGetMgContext {
+            Invoke-LOAFakeOperation 'GetMgContext'
+            $global:LOAFake.MgContext
+        }
+
+        Mock Invoke-LOAConnectGraph {
+            Invoke-LOAFakeOperation 'ConnectGraph'
+        }
+
+        Mock Invoke-LOAGetMgUser {
+            Invoke-LOAFakeOperation 'GetMgUser'
+            $upn = Get-LOAFakeEntraUpn -UserId $UserId
+            [pscustomobject]$global:LOAFake.Entra.Users[$upn].Clone()
+        }
+
+        Mock Invoke-LOARevokeSignInSession {
+            Invoke-LOAFakeOperation 'RevokeSignInSession'
+            $upn = Get-LOAFakeEntraUpn -UserId $UserId
+            $global:LOAFake.Entra.Revoked[$upn] = 1 + [int]$global:LOAFake.Entra.Revoked[$upn]
+            $global:LOAFake.Entra.RevokeResult
+        }
+
+        Mock Invoke-LOAGetGroupMember {
+            Invoke-LOAFakeOperation 'GetGroupMember'
+            foreach ($memberId in $global:LOAFake.Entra.Groups[$GroupId]) {
+                [pscustomobject]@{ Id = $memberId }
+            }
+        }
+
+        Mock Invoke-LOAAddGroupMember {
+            Invoke-LOAFakeOperation 'AddGroupMember'
+            $members = $global:LOAFake.Entra.Groups[$GroupId]
+            if ($members -contains $DirectoryObjectId) { throw 'Fake Entra: One or more added object references already exist.' }
+            [void]$members.Add($DirectoryObjectId)
+        }
+
+        Mock Invoke-LOARemoveGroupMember {
+            Invoke-LOAFakeOperation 'RemoveGroupMember'
+            $global:LOAFake.Entra.Groups[$GroupId].Remove($DirectoryObjectId)
+        }
+
         Mock Invoke-LOASetMailboxAutoReplyConfiguration {
             Invoke-LOAFakeOperation 'SetMailboxAutoReplyConfiguration'
             $ooo = $global:LOAFake.Mailboxes[$Identity].OOO
@@ -226,6 +296,12 @@ function Get-LOAFakeUserState {
 
     $user = $global:LOAFake.ADUsers[$UserPrincipalName]
     $mailbox = $global:LOAFake.Mailboxes[$UserPrincipalName]
+    $blockGroupId = $global:LOAFake.Config.SignInBlockGroupId
+    $blockGroupMember = if ([string]::IsNullOrWhiteSpace($blockGroupId)) {
+        $null
+    } else {
+        $global:LOAFake.Entra.Groups[$blockGroupId] -contains $global:LOAFake.Entra.Users[$UserPrincipalName].Id
+    }
 
     [ordered]@{
         Enabled       = $user.Enabled
@@ -235,6 +311,7 @@ function Get-LOAFakeUserState {
         FullAccess    = @($mailbox.FullAccess | Sort-Object)
         SendAs        = @($mailbox.SendAs | Sort-Object)
         OOOState      = $mailbox.OOO.AutoReplyState
+        BlockGroupMember = $blockGroupMember
     }
 }
 
