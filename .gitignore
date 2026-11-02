@@ -10,3 +10,4 @@ secrets.ps1
 config.local.ps1
 transcripts/
 output/
+config.local.psd1

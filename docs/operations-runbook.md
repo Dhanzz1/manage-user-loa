@@ -8,14 +8,13 @@ This runbook is for operators executing the leave-of-absence workflow in a hybri
 
 - Standard LOA start and return workflow
 - Hybrid AD and Exchange Online environments
-- Optional SaaS connector hooks when they are explicitly enabled
 
 ## Prerequisites
 
 - PowerShell 5.1 or later
 - `ActiveDirectory` module available
 - `ExchangeOnlineManagement` module available
-- Correct values in `$Script:Config`
+- A valid config `.psd1` (see the README Configuration section)
 - AD rights to update the target user and move the object between OUs
 - Exchange Online rights to manage mailbox delegation and automatic replies
 - A non-production user for first-time validation
@@ -23,11 +22,10 @@ This runbook is for operators executing the leave-of-absence workflow in a hybri
 ## Pre-Run Safety Checks
 
 1. Confirm the target user is the correct person and not already mid-way through another identity change.
-2. Review `$Script:Config` for:
+2. Review the config file for:
    - `LOAOUDistinguishedName`
    - `DomainController`
    - `OUStashAttribute`
-   - any enabled SaaS settings
 3. Confirm the manager UPN is correct if you plan to override the AD manager.
 4. Run the command with `-WhatIf` first.
 5. Tell the ticket that mailbox delegation and OOO may need manual review if the user already has custom settings.
@@ -45,12 +43,13 @@ Then rerun without `-WhatIf` after review.
 Expected workflow:
 
 - original OU is stashed
+- user is added to the sign-in block group, if configured
 - AD account is disabled
+- Microsoft 365 sign-in sessions are revoked
 - GAL visibility is hidden
 - user is moved into the LOA OU
 - mailbox `FullAccess` and `SendAs` are granted to the manager when not already present
 - OOO is set or flagged for manual review
-- optional SaaS deactivation runs if enabled
 
 Capture in the ticket:
 
@@ -72,12 +71,12 @@ Then rerun without `-WhatIf` after review.
 Expected workflow:
 
 - AD account is enabled
+- user is removed from the sign-in block group, if configured
 - GAL visibility is restored
 - user is moved back to the stashed or supplied target OU
 - stash attribute is cleared only after a successful move
 - mailbox delegation is removed
 - OOO is disabled
-- optional SaaS reactivation runs if enabled
 
 Capture in the ticket:
 
@@ -95,6 +94,14 @@ Capture in the ticket:
   - confirm the OU path and verify the configured domain controller can resolve it
 - EXO delegation or OOO warnings
   - core AD work may still succeed; review the warning and validate manually in Exchange
+- `Microsoft Graph pre-check failed`
+  - nothing was changed; confirm the user is synced to Entra ID, `SignInBlockGroupId` is the group's object ID, and the operator has the Graph scopes, then rerun Start
+- `Sign-in block group add failed`
+  - nothing after the OU stash was changed; check the Graph permissions and the group ID, then rerun Start
+- `Session revoke failed`
+  - the account is disabled but not moved or delegated; fix the cause and rerun Start, which continues from here
+- `Sign-in block group removal failed` on End
+  - remove the user from the group by hand in Entra
 - user already in the LOA OU with no stashed origin
   - stop and investigate before trying to force a normal return flow
 
@@ -103,5 +110,4 @@ Capture in the ticket:
 - OOO is already enabled or already scheduled
 - mailbox delegation was already present before LOA started
 - GAL hiding was already set before LOA started
-- SaaS connector actions fail or are disabled
 - target return OU is intentionally different from the stashed OU

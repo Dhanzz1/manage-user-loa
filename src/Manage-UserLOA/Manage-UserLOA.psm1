@@ -4,45 +4,25 @@
 # See README.md for prerequisites and usage.
 
 # ---------------------------------------------------------------------------
-# Configuration - set this to your domain
+# Configuration
 # ---------------------------------------------------------------------------
-# These values are intentionally kept in one hashtable so operators can adjust
-# environment-specific settings without hunting through the workflow code.
-$Script:Config = @{
-    # Disabled users are moved here during LOA.
-    LOAOUDistinguishedName = 'OU=Users on Temporary Leave,OU=Corporate,DC=yourdomain,DC=com'
-    # All AD reads/writes are pinned to this DC for consistent results.
-    DomainController       = 'YOURDC.yourdomain.com'
-    # OUStashAttribute uses extensionAttribute10 by default. Check that this
-    # attribute is not already in use in your environment (for example, by
-    # licence automation or an HR sync) before deploying. Change it to any free
-    # extensionAttribute (1-15) that your org has not claimed.
-    OUStashAttribute       = 'extensionAttribute10'
-    # Scheduled OOO starting within this many hours needs human review.
-    OOOSchedulingThreshold = 24
+# Environment-specific settings live in a .psd1 file, loaded by
+# Import-LOAConfig at the start of each public command. See
+# examples\config.example.psd1 for the keys.
+$Script:Config = $null
 
-    # SaaS - Google Workspace (set GoogleEnabled to $true to activate)
-    GoogleEnabled          = $false
-    GoogleServiceAccountToken = ''
-    GoogleDomain           = 'yourdomain.com'
-
-    # SaaS - Generic REST (set GenericSaaSEnabled to $true to activate)
-    GenericSaaSEnabled     = $false
-    GenericSaaSBaseUrl     = 'https://yourdomain.com'
-    GenericSaaSApiToken    = ''
-    GenericSaaSDeactivateEndpoint = '/api/users/{userPrincipalName}/deactivate'
-    GenericSaaSReactivateEndpoint = '/api/users/{userPrincipalName}/reactivate'
-    GenericSaaSMethod      = 'POST'
-}
+# Keys Import-LOAConfig recognises. Anything else in the file is warned about,
+# which catches settings left over from older versions.
+$Script:LOAKnownConfigKeys = @('LOAOUDistinguishedName', 'DomainController', 'OUStashAttribute', 'SignInBlockGroupId')
 
 # ---------------------------------------------------------------------------
 # External command wrappers
 # ---------------------------------------------------------------------------
 
 function Invoke-LOAGetADUser {
-    [CmdletBinding(DefaultParameterSetName = 'Filter')]
+    [CmdletBinding(DefaultParameterSetName = 'UserPrincipalName')]
     param(
-        [Parameter(ParameterSetName = 'Filter', Mandatory)][scriptblock]$Filter,
+        [Parameter(ParameterSetName = 'UserPrincipalName', Mandatory)][string]$UserPrincipalName,
         [Parameter(ParameterSetName = 'Identity', Mandatory)][string]$Identity,
         [string[]]$Properties,
         [string]$Server
@@ -53,7 +33,18 @@ function Invoke-LOAGetADUser {
         return
     }
 
-    Get-ADUser -Filter $Filter -Properties $Properties -Server $Server
+    # Scriptblock filters bind variables safely through the AD provider and
+    # avoid building a filter string by hand.
+    Get-ADUser -Filter { UserPrincipalName -eq $UserPrincipalName } -Properties $Properties -Server $Server
+}
+
+function Invoke-LOAGetADObject {
+    param(
+        [Parameter(Mandatory)][string]$Identity,
+        [string]$Server
+    )
+
+    Get-ADObject -Identity $Identity -Server $Server -ErrorAction Stop
 }
 
 function Invoke-LOASetADUser {
@@ -194,12 +185,145 @@ function Invoke-LOASetMailboxAutoReplyConfiguration {
         -ErrorAction Stop
 }
 
+function Invoke-LOAGetMgContext {
+    Get-MgContext
+}
+
+function Invoke-LOAConnectGraph {
+    param(
+        [Parameter(Mandatory)][string[]]$Scopes
+    )
+
+    Connect-MgGraph -Scopes $Scopes -NoWelcome -ErrorAction Stop
+}
+
+function Invoke-LOAGetMgUser {
+    param(
+        [Parameter(Mandatory)][string]$UserId
+    )
+
+    Get-MgUser -UserId $UserId -Property Id,AccountEnabled -ErrorAction Stop
+}
+
+function Invoke-LOARevokeSignInSession {
+    param(
+        [Parameter(Mandatory)][string]$UserId
+    )
+
+    Revoke-MgUserSignInSession -UserId $UserId -ErrorAction Stop
+}
+
+function Invoke-LOAGetGroupMember {
+    param(
+        [Parameter(Mandatory)][string]$GroupId
+    )
+
+    Get-MgGroupMember -GroupId $GroupId -All -ErrorAction Stop
+}
+
+function Invoke-LOAAddGroupMember {
+    param(
+        [Parameter(Mandatory)][string]$GroupId,
+        [Parameter(Mandatory)][string]$DirectoryObjectId
+    )
+
+    New-MgGroupMember -GroupId $GroupId -DirectoryObjectId $DirectoryObjectId -ErrorAction Stop
+}
+
+function Invoke-LOARemoveGroupMember {
+    param(
+        [Parameter(Mandatory)][string]$GroupId,
+        [Parameter(Mandatory)][string]$DirectoryObjectId
+    )
+
+    Remove-MgGroupMemberByRef -GroupId $GroupId -DirectoryObjectId $DirectoryObjectId -ErrorAction Stop
+}
+
 function Invoke-LOAGetUserStateSnapshot {
     param(
         [Parameter(Mandatory)][string]$UserPrincipalName
     )
 
     Get-UserStateSnapshot -UserPrincipalName $UserPrincipalName
+}
+
+# ---------------------------------------------------------------------------
+# Config loading
+# ---------------------------------------------------------------------------
+
+function Resolve-LOAConfigPath {
+    param([string]$ConfigPath)
+
+    # Explicit parameter, then environment variable, then the machine-wide
+    # default. Existence is checked by Import-LOAConfig.
+    if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) { return $ConfigPath }
+    if (-not [string]::IsNullOrWhiteSpace($env:MANAGE_USERLOA_CONFIG)) { return $env:MANAGE_USERLOA_CONFIG }
+    Join-Path $env:ProgramData 'Manage-UserLOA\config.psd1'
+}
+
+function Test-LOAConfig {
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    # Collect every problem so the operator can fix the file in one pass.
+    $problems = @()
+    foreach ($key in @('LOAOUDistinguishedName', 'DomainController', 'OUStashAttribute')) {
+        if (-not $Config.ContainsKey($key) -or [string]::IsNullOrWhiteSpace([string]$Config[$key])) {
+            $problems += "Missing required key '$key'"
+        }
+    }
+
+    $stash = $Config['OUStashAttribute']
+    if ($null -ne $stash -and -not ($stash -is [string] -and $stash -match '^extensionAttribute([1-9]|1[0-5])$')) {
+        $problems += "OUStashAttribute must be extensionAttribute1 to extensionAttribute15 (found '$stash')"
+    }
+
+    $loaOU = $Config['LOAOUDistinguishedName']
+    if (-not [string]::IsNullOrWhiteSpace([string]$loaOU) -and -not ($loaOU -is [string] -and $loaOU -match '^(OU|CN)=')) {
+        $problems += "LOAOUDistinguishedName must be a distinguished name starting with OU= or CN= (found '$loaOU')"
+    }
+
+    $dc = $Config['DomainController']
+    if ($null -ne $dc -and $dc -isnot [string]) {
+        $problems += 'DomainController must be a string'
+    }
+
+    # A group name instead of its object ID is an easy mistake and would only
+    # surface as a Graph error after Start had begun.
+    $blockGroup = $Config['SignInBlockGroupId']
+    if ($null -ne $blockGroup -and -not ($blockGroup -is [string] -and ($blockGroup -eq '' -or $blockGroup -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$'))) {
+        $problems += "SignInBlockGroupId must be the group's object ID (a GUID) or empty (found '$blockGroup')"
+    }
+
+    $problems
+}
+
+function Import-LOAConfig {
+    param([string]$ConfigPath)
+
+    $path = Resolve-LOAConfigPath -ConfigPath $ConfigPath
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        $defaultPath = Join-Path $env:ProgramData 'Manage-UserLOA\config.psd1'
+        throw "Config file not found: $path. Pass -ConfigPath, set MANAGE_USERLOA_CONFIG, or create $defaultPath."
+    }
+
+    try {
+        $config = Import-PowerShellDataFile -Path $path -ErrorAction Stop
+    } catch {
+        throw "Config file '$path' could not be read: $($_.Exception.Message)"
+    }
+
+    $problems = @(Test-LOAConfig -Config $config)
+    if ($problems.Count -gt 0) {
+        throw ("Config file '$path' is invalid:" + (($problems | ForEach-Object { "`n - $_" }) -join ''))
+    }
+
+    foreach ($key in $config.Keys) {
+        if ($Script:LOAKnownConfigKeys -notcontains $key) {
+            Write-Warning "Unknown config key '$key' in $path is ignored."
+        }
+    }
+
+    $Script:Config = $config
 }
 
 # ---------------------------------------------------------------------------
@@ -210,7 +334,7 @@ function Connect-LOAServices {
     # Fail early if the target DC is not reachable. Most of the script depends
     # on AD, so this gives a clearer error than several later command failures.
     if (-not (Test-Connection -ComputerName $Script:Config.DomainController -Count 1 -Quiet -ErrorAction SilentlyContinue)) {
-        throw "Domain controller '$($Script:Config.DomainController)' is not reachable. Check connectivity or update Script:Config.DomainController."
+        throw "Domain controller '$($Script:Config.DomainController)' is not reachable. Check connectivity or update DomainController in the config file."
     }
 
     # Load the modules only if they are not already available in the session.
@@ -220,6 +344,11 @@ function Connect-LOAServices {
     if (-not (Get-Module ExchangeOnlineManagement)) {
         Import-Module ExchangeOnlineManagement -ErrorAction Stop
     }
+    foreach ($graphModule in @('Microsoft.Graph.Authentication', 'Microsoft.Graph.Users', 'Microsoft.Graph.Users.Actions', 'Microsoft.Graph.Groups')) {
+        if (-not (Get-Module $graphModule)) {
+            Import-Module $graphModule -ErrorAction Stop
+        }
+    }
 
     # Reuse an existing EXO session if one is already connected. -DisableWAM
     # avoids Windows Account Manager choosing the wrong cached Microsoft account.
@@ -227,15 +356,128 @@ function Connect-LOAServices {
     if (-not $exo) {
         Connect-ExchangeOnline -ShowBanner:$false -DisableWAM -ErrorAction Stop
     }
+
+    # Graph is used to cut off Microsoft 365 sign-in after the AD disable.
+    Connect-LOAGraph -RequiredScopes (Get-LOAGraphScopes)
+}
+
+function Get-LOAGraphScopes {
+    # Delegated scopes the operator consents to. GroupMember.ReadWrite.All is
+    # only requested when the sign-in block group is configured.
+    $scopes = @('User.Read.All', 'User.RevokeSessions.All')
+    if (-not [string]::IsNullOrWhiteSpace($Script:Config.SignInBlockGroupId)) {
+        $scopes += 'GroupMember.ReadWrite.All'
+    }
+    $scopes
+}
+
+function Connect-LOAGraph {
+    param([Parameter(Mandatory)][string[]]$RequiredScopes)
+
+    # Reuse the operator's existing Graph session when it already carries every
+    # scope we need. Graph can report scopes in a different case, so compare
+    # case-insensitively.
+    $context = Invoke-LOAGetMgContext
+    if ($context) {
+        $granted = @($context.Scopes | ForEach-Object { "$_".ToLowerInvariant() })
+        $missing = @($RequiredScopes | Where-Object { $granted -notcontains $_.ToLowerInvariant() })
+        if ($missing.Count -eq 0) { return }
+    }
+
+    Invoke-LOAConnectGraph -Scopes $RequiredScopes
+}
+
+function Get-LOAEntraUserId {
+    param([Parameter(Mandatory)][string]$UserPrincipalName)
+
+    (Invoke-LOAGetMgUser -UserId $UserPrincipalName).Id
+}
+
+function Test-LOARevokeResult {
+    param([AllowNull()]$Result)
+
+    # Revoke-MgUserSignInSession returns $true, or an object wrapping it in
+    # Value, depending on the Graph SDK version.
+    if ($Result -is [bool]) { return $Result }
+    if ($null -ne $Result -and $Result.PSObject.Properties['Value']) { return ($Result.Value -eq $true) }
+    $false
+}
+
+function Test-LOABlockGroupMember {
+    param([Parameter(Mandatory)][string]$UserId)
+
+    @(Invoke-LOAGetGroupMember -GroupId $Script:Config.SignInBlockGroupId | Where-Object { $_.Id -eq $UserId }).Count -gt 0
+}
+
+function Add-LOASignInBlock {
+    param(
+        [Parameter(Mandatory)][string]$UserPrincipalName,
+        [Parameter(Mandatory)][string]$UserId
+    )
+
+    # Membership of this cloud-only group is targeted by a Conditional Access
+    # "Block access" policy, so it stops new sign-ins without waiting for
+    # Entra Connect to sync the AD disable.
+    try {
+        if (Test-LOABlockGroupMember -UserId $UserId) {
+            Write-Host '  [SKIP] Already in sign-in block group' -ForegroundColor Yellow
+            return
+        }
+        Invoke-LOAAddGroupMember -GroupId $Script:Config.SignInBlockGroupId -DirectoryObjectId $UserId
+    } catch {
+        throw "Sign-in block group add failed for ${UserPrincipalName}: $($_.Exception.Message.TrimEnd('.')). No account changes were made after the OU stash; fix the cause and rerun Start-UserLOA."
+    }
+    Write-Host '  [OK] Added to sign-in block group' -ForegroundColor Green
+}
+
+function Remove-LOASignInBlock {
+    param([Parameter(Mandatory)][string]$UserPrincipalName)
+
+    # The user is returning, so a failure here is reported for manual follow-up
+    # instead of stopping the rest of the return workflow.
+    try {
+        $userId = Get-LOAEntraUserId -UserPrincipalName $UserPrincipalName
+        if (-not (Test-LOABlockGroupMember -UserId $userId)) {
+            Write-Host '  [SKIP] Not in sign-in block group' -ForegroundColor Yellow
+            return
+        }
+        Invoke-LOARemoveGroupMember -GroupId $Script:Config.SignInBlockGroupId -DirectoryObjectId $userId
+        Write-Host '  [OK] Removed from sign-in block group' -ForegroundColor Green
+    } catch {
+        Write-Host "  [ERR] Sign-in block group removal failed: $($_.Exception.Message.TrimEnd('.')). Remove $UserPrincipalName from the group manually." -ForegroundColor Red
+    }
+}
+
+function Invoke-LOASessionRevoke {
+    param(
+        [Parameter(Mandatory)][string]$UserPrincipalName,
+        [Parameter(Mandatory)][string]$UserId
+    )
+
+    # Revoking refresh tokens forces every client to sign in again, which the
+    # AD disable (once synced) or the block group then refuses.
+    $result = $null
+    $failure = $null
+    try {
+        $result = Invoke-LOARevokeSignInSession -UserId $UserId
+    } catch {
+        $failure = $_.Exception.Message.TrimEnd('.')
+    }
+
+    if (-not $failure -and -not (Test-LOARevokeResult -Result $result)) {
+        $failure = 'unexpected result'
+    }
+    if ($failure) {
+        throw "Session revoke failed for ${UserPrincipalName}: $failure. The AD account is disabled but the user has not been moved or delegated; fix the cause and rerun Start-UserLOA."
+    }
+    Write-Host '  [OK] Microsoft 365 sign-in sessions revoked' -ForegroundColor Green
 }
 
 function Get-LOAUser {
     param([Parameter(Mandatory)][string]$UserPrincipalName)
 
-    # Scriptblock filters bind variables safely through the AD provider and
-    # avoid building a filter string by hand.
     $props = @('DisplayName', 'EmailAddress', 'Manager', 'msExchHideFromAddressLists', $Script:Config.OUStashAttribute)
-    $adUser = Invoke-LOAGetADUser -Filter { UserPrincipalName -eq $UserPrincipalName } -Properties $props -Server $Script:Config.DomainController
+    $adUser = Invoke-LOAGetADUser -UserPrincipalName $UserPrincipalName -Properties $props -Server $Script:Config.DomainController
     if (-not $adUser) { throw "User $UserPrincipalName not found in AD" }
     if (@($adUser).Count -gt 1) { throw "Multiple AD users found for $UserPrincipalName" }
 
@@ -377,7 +619,7 @@ function Assert-LOAOrganizationalUnit {
     # Validate target OUs before moving users. Some default AD locations are
     # containers rather than OUs, so accept both object classes.
     try {
-        $target = Get-ADObject -Identity $DistinguishedName -Server $Script:Config.DomainController -ErrorAction Stop
+        $target = Invoke-LOAGetADObject -Identity $DistinguishedName -Server $Script:Config.DomainController
     } catch {
         throw "$Purpose OU/container not found or unreachable on $($Script:Config.DomainController): $DistinguishedName. $($_.Exception.Message)"
     }
@@ -453,18 +695,11 @@ function Resolve-OOOAction {
         [switch]$ForceOOO
     )
 
-    # Decide whether Start should overwrite OOO. Existing or soon-starting OOO
-    # may be personal/user-managed, so those cases are sent to manual review.
+    # Decide whether Start should overwrite OOO. Any enabled or scheduled OOO
+    # may be personal/user-managed, so only -ForceOOO replaces it.
     if ($ForceOOO)                            { return 'Set' }
     if ($Snapshot.OOOState -eq 'Disabled')    { return 'Set' }
     if ($Snapshot.OOOState -eq 'Unavailable') { return 'Skip' }
-    if ($Snapshot.OOOState -eq 'Enabled')     { return 'ManualReview' }
-    if ($Snapshot.OOOState -eq 'Scheduled') {
-        if (-not $Snapshot.OOOStartTime)      { return 'ManualReview' }
-        $hours = ($Snapshot.OOOStartTime - (Get-Date)).TotalHours
-        if ($hours -le $Script:Config.OOOSchedulingThreshold) { return 'ManualReview' }
-        return 'Set'
-    }
     'ManualReview'
 }
 
@@ -478,10 +713,9 @@ function Get-OOOManualReviewContext {
 
     if ($Snapshot.OOOState -eq 'Scheduled') {
         if ($Snapshot.OOOStartTime) {
-            $hours = ($Snapshot.OOOStartTime - (Get-Date)).TotalHours
-            return ("OOO is scheduled to start at {0} ({1:N1}h from now; threshold {2}h)" -f $Snapshot.OOOStartTime, $hours, $Script:Config.OOOSchedulingThreshold)
+            return "OOO is scheduled to start at $($Snapshot.OOOStartTime)"
         }
-        return 'OOO is scheduled, but the start time could not be read'
+        return 'OOO is scheduled'
     }
 
     "OOO is in state '$($Snapshot.OOOState)'"
@@ -549,110 +783,6 @@ function Show-UserSummary {
     Write-Host $line -ForegroundColor Cyan
 }
 
-function Join-LOAApiUrl {
-    param(
-        [Parameter(Mandatory)][string]$BaseUrl,
-        [Parameter(Mandatory)][string]$Endpoint
-    )
-
-    if ($Endpoint -match '^https?://') { return $Endpoint }
-
-    "{0}/{1}" -f $BaseUrl.TrimEnd('/'), $Endpoint.TrimStart('/')
-}
-
-function Invoke-LOAGoogleWorkspaceSuspension {
-    param(
-        [Parameter(Mandatory)][string]$UserPrincipalName,
-        [Parameter(Mandatory)][bool]$Suspended
-    )
-
-    if (-not $Script:Config.GoogleEnabled) {
-        Write-Host '  [SKIP] Google Workspace: disabled in config' -ForegroundColor Yellow
-        return
-    }
-
-    if ([string]::IsNullOrWhiteSpace($Script:Config.GoogleServiceAccountToken) -or [string]::IsNullOrWhiteSpace($Script:Config.GoogleDomain)) {
-        Write-Host '  [ERR] Google Workspace: GoogleServiceAccountToken and GoogleDomain are required' -ForegroundColor Red
-        return
-    }
-
-    try {
-        $userKey = if ($UserPrincipalName -like '*@*') { $UserPrincipalName } else { "$UserPrincipalName@$($Script:Config.GoogleDomain)" }
-        $encodedUserKey = [System.Uri]::EscapeDataString($userKey)
-        $uri = "https://admin.googleapis.com/admin/directory/v1/users/$encodedUserKey"
-        $headers = @{
-            # NOTE: Production use requires a proper OAuth 2.0 token exchange using a
-            # service account with domain-wide delegation configured in the Google
-            # Admin Console. GoogleServiceAccountToken here represents the bearer token
-            # obtained from that exchange, not a static credential.
-            Authorization = "Bearer $($Script:Config.GoogleServiceAccountToken)"
-            Accept        = 'application/json'
-        }
-        $body = @{ suspended = $Suspended } | ConvertTo-Json
-
-        Invoke-RestMethod -Method Patch -Uri $uri -Headers $headers -ContentType 'application/json' -Body $body -ErrorAction Stop | Out-Null
-        $state = if ($Suspended) { 'suspended' } else { 'reactivated' }
-        Write-Host "  [OK] Google Workspace: $state $userKey" -ForegroundColor Green
-    } catch {
-        Write-Host "  [ERR] Google Workspace: suspension update failed: $($_.Exception.Message)" -ForegroundColor Red
-    }
-}
-
-function Invoke-LOAGenericSaaSAction {
-    param(
-        [Parameter(Mandatory)][string]$UserPrincipalName,
-        [Parameter(Mandatory)][ValidateSet('Deactivate', 'Reactivate')][string]$Action
-    )
-
-    if (-not $Script:Config.GenericSaaSEnabled) {
-        Write-Host '  [SKIP] Generic REST: disabled in config' -ForegroundColor Yellow
-        return
-    }
-
-    $endpoint = if ($Action -eq 'Deactivate') { $Script:Config.GenericSaaSDeactivateEndpoint } else { $Script:Config.GenericSaaSReactivateEndpoint }
-    if ([string]::IsNullOrWhiteSpace($Script:Config.GenericSaaSBaseUrl) -or [string]::IsNullOrWhiteSpace($endpoint)) {
-        Write-Host '  [ERR] Generic REST: GenericSaaSBaseUrl and the selected endpoint are required' -ForegroundColor Red
-        return
-    }
-
-    try {
-        $encodedUPN = [System.Uri]::EscapeDataString($UserPrincipalName)
-        $resolvedEndpoint = $endpoint.Replace('{userPrincipalName}', $encodedUPN).Replace('{upn}', $encodedUPN)
-        $uri = Join-LOAApiUrl -BaseUrl $Script:Config.GenericSaaSBaseUrl -Endpoint $resolvedEndpoint
-        $method = if ([string]::IsNullOrWhiteSpace($Script:Config.GenericSaaSMethod)) { 'POST' } else { $Script:Config.GenericSaaSMethod }
-        $headers = @{ Accept = 'application/json' }
-        if (-not [string]::IsNullOrWhiteSpace($Script:Config.GenericSaaSApiToken)) {
-            $headers.Authorization = "Bearer $($Script:Config.GenericSaaSApiToken)"
-        }
-
-        # Generic REST is a template. Replace this endpoint and payload shape
-        # with the contract required by your own SaaS tool.
-        $body = @{
-            userPrincipalName = $UserPrincipalName
-            action            = $Action.ToLowerInvariant()
-        } | ConvertTo-Json
-
-        Invoke-RestMethod -Method $method -Uri $uri -Headers $headers -ContentType 'application/json' -Body $body -ErrorAction Stop | Out-Null
-        Write-Host "  [OK] Generic REST: $Action completed for $UserPrincipalName" -ForegroundColor Green
-    } catch {
-        Write-Host "  [ERR] Generic REST: $Action failed: $($_.Exception.Message)" -ForegroundColor Red
-    }
-}
-
-function Invoke-LOASaaSDeactivation {
-    param([Parameter(Mandatory)][string]$UserPrincipalName)
-
-    Invoke-LOAGoogleWorkspaceSuspension -UserPrincipalName $UserPrincipalName -Suspended $true
-    Invoke-LOAGenericSaaSAction -UserPrincipalName $UserPrincipalName -Action Deactivate
-}
-
-function Invoke-LOASaaSReactivation {
-    param([Parameter(Mandatory)][string]$UserPrincipalName)
-
-    Invoke-LOAGoogleWorkspaceSuspension -UserPrincipalName $UserPrincipalName -Suspended $false
-    Invoke-LOAGenericSaaSAction -UserPrincipalName $UserPrincipalName -Action Reactivate
-}
-
 # ---------------------------------------------------------------------------
 # Start LOA
 # ---------------------------------------------------------------------------
@@ -664,8 +794,8 @@ function Invoke-LOASaaSReactivation {
 .DESCRIPTION
     Disables the on-premises AD account, hides the user from the GAL, moves
     the user into the configured LOA OU, grants mailbox access to the user's
-    manager, optionally sets the default OOO message, optionally deactivates
-    configured SaaS integrations, and prints before/after ticket summaries.
+    manager, optionally sets the default OOO message, and prints before/after
+    ticket summaries.
 
 .PARAMETER UserPrincipalName
     The UPN of the user entering leave.
@@ -675,6 +805,10 @@ function Invoke-LOASaaSReactivation {
 
 .PARAMETER ForceOOO
     Overrides the OOO safety check and applies the default OOO message.
+
+.PARAMETER ConfigPath
+    Path to the config .psd1. Defaults to $env:MANAGE_USERLOA_CONFIG, then
+    $env:ProgramData\Manage-UserLOA\config.psd1.
 
 .EXAMPLE
     Start-UserLOA -UserPrincipalName 'jane.doe@yourdomain.com' -WhatIf
@@ -687,8 +821,12 @@ function Start-UserLOA {
     param(
         [Parameter(Mandatory)][ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')][string]$UserPrincipalName,
         [ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')][string]$ManagerUPN,
-        [switch]$ForceOOO
+        [switch]$ForceOOO,
+        [string]$ConfigPath
     )
+
+    # Load and validate config before connecting, so a bad file fails fast.
+    Import-LOAConfig -ConfigPath $ConfigPath
 
     # Connect to AD and Exchange before doing any lookups or changes.
     Connect-LOAServices
@@ -706,11 +844,25 @@ function Start-UserLOA {
         $managerObj = Invoke-LOAGetADUser -Identity $adUser.Manager -Properties $managerProps -Server $Script:Config.DomainController
         $ManagerUPN = $managerObj.UserPrincipalName
     } else {
-        $managerObj = Invoke-LOAGetADUser -Filter { UserPrincipalName -eq $ManagerUPN } -Properties $managerProps -Server $Script:Config.DomainController
+        $managerObj = Invoke-LOAGetADUser -UserPrincipalName $ManagerUPN -Properties $managerProps -Server $Script:Config.DomainController
         if (-not $managerObj) { throw "Manager $ManagerUPN not found in AD" }
     }
 
     $managerDisplayName = $managerObj.DisplayName
+
+    # Graph pre-check. Resolve the Entra user, and read the block group when
+    # one is configured, before anything is written. A user who is not synced
+    # to Entra, a wrong group ID or missing consent then stops Start with the
+    # account untouched instead of after the OU stash or the AD disable.
+    $hasBlockGroup = -not [string]::IsNullOrWhiteSpace($Script:Config.SignInBlockGroupId)
+    try {
+        $entraUserId = Get-LOAEntraUserId -UserPrincipalName $UserPrincipalName
+        if ($hasBlockGroup) {
+            [void](Test-LOABlockGroupMember -UserId $entraUserId)
+        }
+    } catch {
+        throw "Microsoft Graph pre-check failed for ${UserPrincipalName}: $($_.Exception.Message.TrimEnd('.')). No changes were made; check the user exists in Entra ID, the SignInBlockGroupId and your Graph permissions, then rerun Start-UserLOA."
+    }
     $managerEmail = if ($managerObj.EmailAddress) { $managerObj.EmailAddress } else { $ManagerUPN }
 
     # ---- BEFORE snapshot ----
@@ -746,7 +898,14 @@ function Start-UserLOA {
         Write-Host "  [OK] Original OU stashed: $originalParentOU" -ForegroundColor Green
     }
 
-    # 1. Disable account.
+    # 1. Block Microsoft 365 sign-in (optional).
+    # Runs before the AD disable so a Graph failure stops Start while the
+    # account is still untouched.
+    if ($hasBlockGroup -and $PSCmdlet.ShouldProcess($UserPrincipalName, 'Add to sign-in block group')) {
+        Add-LOASignInBlock -UserPrincipalName $UserPrincipalName -UserId $entraUserId
+    }
+
+    # 2. Disable account.
     # Disabling the AD account prevents sign-in while Entra Connect syncs the
     # authoritative on-prem state to Microsoft 365.
     if ($PSCmdlet.ShouldProcess($UserPrincipalName, 'Disable AD account')) {
@@ -754,7 +913,17 @@ function Start-UserLOA {
         Write-Host '  [OK] AD account disabled' -ForegroundColor Green
     }
 
-    # 2. Hide from GAL.
+    # 3. Revoke sign-in sessions.
+    # A failure here stops Start: the user is disabled but not yet moved or
+    # delegated, and a rerun picks up from this point.
+    if ($PSCmdlet.ShouldProcess($UserPrincipalName, 'Revoke Microsoft 365 sign-in sessions')) {
+        Invoke-LOASessionRevoke -UserPrincipalName $UserPrincipalName -UserId $entraUserId
+        if (-not $hasBlockGroup) {
+            Write-Host '  [WARN] No SignInBlockGroupId configured. The user can sign in to Microsoft 365 again until Entra Connect syncs the AD disable (about 30 minutes by default).' -ForegroundColor Yellow
+        }
+    }
+
+    # 4. Hide from GAL.
     # This sets the on-prem Exchange attribute that controls GAL visibility in
     # hybrid environments.
     if ($PSCmdlet.ShouldProcess($UserPrincipalName, 'Hide from GAL')) {
@@ -762,7 +931,7 @@ function Start-UserLOA {
         Write-Host '  [OK] Hidden from GAL' -ForegroundColor Green
     }
 
-    # 3. Move to LOA OU.
+    # 5. Move to LOA OU.
     # Refresh $adUser after the move because the distinguishedName changes.
     if ((Get-ParentOU -DistinguishedName $adUser.DistinguishedName) -eq $Script:Config.LOAOUDistinguishedName) {
         Write-Host '  [SKIP] Already in LOA OU' -ForegroundColor Yellow
@@ -772,7 +941,7 @@ function Start-UserLOA {
         $adUser = Get-LOAUser -UserPrincipalName $UserPrincipalName
     }
 
-    # 4. Delegate mailbox to manager.
+    # 6. Delegate mailbox to manager.
     # Permissions are checked before adding so reruns are mostly idempotent and
     # do not create duplicate grant attempts.
     if ($PSCmdlet.ShouldProcess($UserPrincipalName, "Delegate mailbox to $ManagerUPN")) {
@@ -799,7 +968,7 @@ function Start-UserLOA {
         }
     }
 
-    # 5. OOO decision.
+    # 7. OOO decision.
     # Resolve-OOOAction protects user-scheduled or already-enabled OOO messages
     # from being overwritten unless the operator explicitly uses -ForceOOO.
     switch (Resolve-OOOAction -Snapshot $before -ForceOOO:$ForceOOO) {
@@ -837,13 +1006,6 @@ $($before.DisplayName)
             $expectedOOOState = $before.OOOState
             Write-Host '  [WARN] OOO state could not be read; leaving OOO unchanged.' -ForegroundColor Yellow
         }
-    }
-
-    # 6. Deactivate configured SaaS integrations.
-    # SaaS connectors are optional and disabled by default. Connector failures
-    # are reported but do not block the AD or Exchange LOA workflow.
-    if ($PSCmdlet.ShouldProcess($UserPrincipalName, 'Deactivate configured SaaS integrations')) {
-        Invoke-LOASaaSDeactivation -UserPrincipalName $UserPrincipalName
     }
     } finally {
 
@@ -894,8 +1056,7 @@ $($before.DisplayName)
 .DESCRIPTION
     Re-enables the on-premises AD account, restores GAL visibility, moves the
     user back to the stashed or supplied OU, removes manager mailbox access,
-    disables OOO, optionally reactivates configured SaaS integrations, and
-    prints before/after ticket summaries.
+    disables OOO, and prints before/after ticket summaries.
 
 .PARAMETER UserPrincipalName
     The UPN of the user returning from leave.
@@ -906,6 +1067,10 @@ $($before.DisplayName)
 .PARAMETER TargetOU
     Optional override OU for the return move. If omitted, the stashed original
     OU is used.
+
+.PARAMETER ConfigPath
+    Path to the config .psd1. Defaults to $env:MANAGE_USERLOA_CONFIG, then
+    $env:ProgramData\Manage-UserLOA\config.psd1.
 
 .EXAMPLE
     End-UserLOA -UserPrincipalName 'jane.doe@yourdomain.com' -ManagerUPN 'john.smith@yourdomain.com' -WhatIf
@@ -918,8 +1083,11 @@ function End-UserLOA {
     param(
         [Parameter(Mandatory)][ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')][string]$UserPrincipalName,
         [Parameter(Mandatory)][ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')][string]$ManagerUPN,
-        [string]$TargetOU
+        [string]$TargetOU,
+        [string]$ConfigPath
     )
+
+    Import-LOAConfig -ConfigPath $ConfigPath
 
     # End needs the same AD and EXO connections as Start because it reverses
     # both directory and mailbox changes.
@@ -963,7 +1131,12 @@ function End-UserLOA {
         Write-Host '  [OK] AD account enabled' -ForegroundColor Green
     }
 
-    # 2. Unhide from GAL.
+    # 2. Remove from the sign-in block group (optional).
+    if (-not [string]::IsNullOrWhiteSpace($Script:Config.SignInBlockGroupId) -and $PSCmdlet.ShouldProcess($UserPrincipalName, 'Remove from sign-in block group')) {
+        Remove-LOASignInBlock -UserPrincipalName $UserPrincipalName
+    }
+
+    # 3. Unhide from GAL.
     # Clearing the attribute restores default GAL visibility.
     if (-not $adUser.msExchHideFromAddressLists) {
         Write-Host '  [SKIP] GAL visibility already restored' -ForegroundColor Yellow
@@ -972,7 +1145,7 @@ function End-UserLOA {
         Write-Host '  [OK] GAL visibility restored' -ForegroundColor Green
     }
 
-    # 3. Move to target OU.
+    # 4. Move to target OU.
     # Move back to the stashed or supplied OU, then refresh $adUser because the
     # distinguishedName changes after Move-ADObject.
     $moveCompleted = $false
@@ -993,7 +1166,7 @@ function End-UserLOA {
         Write-Host "  [OK] Cleared $($Script:Config.OUStashAttribute)" -ForegroundColor Green
     }
 
-    # 4. Remove mailbox delegation.
+    # 5. Remove mailbox delegation.
     # End removes the manager delegation that Start added. It uses full ACL reads
     # and the BEFORE snapshot fallback because EXO filtered permission lookups
     # can lag behind the visible ACL.
@@ -1039,7 +1212,7 @@ function End-UserLOA {
         }
     }
 
-    # 5. Disable OOO.
+    # 6. Disable OOO.
     # Unconditional: clears both the LOA auto-reply and any user-managed OOO that may
     # be active. Confirm with the returning user if they had a personal OOO set.
     if ($PSCmdlet.ShouldProcess($UserPrincipalName, 'Disable Out-of-Office')) {
@@ -1049,13 +1222,6 @@ function End-UserLOA {
         } catch {
             Write-Host "  [WARN] OOO disable failed: $($_.Exception.Message)" -ForegroundColor Yellow
         }
-    }
-
-    # 6. Reactivate configured SaaS integrations.
-    # SaaS connectors are optional and disabled by default. Connector failures
-    # are reported but do not block the AD or Exchange return workflow.
-    if ($PSCmdlet.ShouldProcess($UserPrincipalName, 'Reactivate configured SaaS integrations')) {
-        Invoke-LOASaaSReactivation -UserPrincipalName $UserPrincipalName
     }
     } finally {
 

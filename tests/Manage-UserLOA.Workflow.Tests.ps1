@@ -26,14 +26,21 @@ function Set-WorkflowTestState {
 
 function Initialize-CommonWorkflowMocks {
     InModuleScope Manage-UserLOA {
+        Mock Import-LOAConfig {
+            $Script:Config = @{
+                LOAOUDistinguishedName = 'OU=Users on Temporary Leave,OU=Corporate,DC=yourdomain,DC=com'
+                DomainController       = 'DC01.yourdomain.com'
+                OUStashAttribute       = 'extensionAttribute10'
+            }
+        }
         Mock Connect-LOAServices {}
+        Mock Invoke-LOASessionRevoke {}
+        Mock Get-LOAEntraUserId { 'aaaaaaaa-0000-0000-0000-000000000001' }
         Mock Assert-LOAOrganizationalUnit {}
         Mock Show-UserSummary {}
         Mock Show-LOAPreExistingWarnings {}
         Mock Write-Host {}
         Mock Start-Sleep {}
-        Mock Invoke-LOASaaSDeactivation {}
-        Mock Invoke-LOASaaSReactivation {}
         Mock Invoke-LOAGetUserStateSnapshot {
             $global:LOASnapshotCallCount++
             if ($global:LOASnapshotCallCount -eq 1) {
@@ -102,7 +109,6 @@ Describe 'Manage-UserLOA workflow orchestration' {
         Assert-MockCalled Invoke-LOAAddMailboxPermission -ModuleName Manage-UserLOA -Times 1 -Exactly -Scope It
         Assert-MockCalled Invoke-LOAAddRecipientPermission -ModuleName Manage-UserLOA -Times 1 -Exactly -Scope It
         Assert-MockCalled Invoke-LOASetMailboxAutoReplyConfiguration -ModuleName Manage-UserLOA -Times 1 -Exactly -Scope It
-        Assert-MockCalled Invoke-LOASaaSDeactivation -ModuleName Manage-UserLOA -Times 1 -Exactly -Scope It
     }
 
     It 'skips destructive Start-UserLOA actions when run with WhatIf' {
@@ -152,7 +158,6 @@ Describe 'Manage-UserLOA workflow orchestration' {
         Assert-MockCalled Invoke-LOAAddMailboxPermission -ModuleName Manage-UserLOA -Times 0 -Exactly -Scope It
         Assert-MockCalled Invoke-LOAAddRecipientPermission -ModuleName Manage-UserLOA -Times 0 -Exactly -Scope It
         Assert-MockCalled Invoke-LOASetMailboxAutoReplyConfiguration -ModuleName Manage-UserLOA -Times 0 -Exactly -Scope It
-        Assert-MockCalled Invoke-LOASaaSDeactivation -ModuleName Manage-UserLOA -Times 0 -Exactly -Scope It
     }
 
     It 'runs the End-UserLOA happy path and removes delegation' {
@@ -203,7 +208,6 @@ Describe 'Manage-UserLOA workflow orchestration' {
         Assert-MockCalled Invoke-LOARemoveMailboxPermission -ModuleName Manage-UserLOA -Times 1 -Exactly -Scope It
         Assert-MockCalled Invoke-LOARemoveRecipientPermission -ModuleName Manage-UserLOA -Times 1 -Exactly -Scope It
         Assert-MockCalled Invoke-LOASetMailboxAutoReplyConfiguration -ModuleName Manage-UserLOA -Times 1 -Exactly -Scope It
-        Assert-MockCalled Invoke-LOASaaSReactivation -ModuleName Manage-UserLOA -Times 1 -Exactly -Scope It
     }
 
     It 'throws when End-UserLOA has no TargetOU and no stashed OU' {

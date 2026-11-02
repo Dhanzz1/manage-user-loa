@@ -23,6 +23,11 @@ Describe 'Manage-UserLOA public module' {
     $modulePath = Join-Path $PSScriptRoot '..\src\Manage-UserLOA\Manage-UserLOA.psm1'
     $module = Import-Module $modulePath -Force -PassThru
 
+    It 'manifest version is 1.1.0' {
+        $manifest = Import-PowerShellDataFile (Join-Path $PSScriptRoot '..\src\Manage-UserLOA\Manage-UserLOA.psd1')
+        Assert-Equal -Actual $manifest.ModuleVersion -Expected '1.1.0' -Message 'The manifest should declare v1.1.0.'
+    }
+
     It 'uses high confirmation impact for Start-UserLOA' {
         $actual = ([System.Management.Automation.CommandMetadata](Get-Command Start-UserLOA)).ConfirmImpact
         Assert-Equal -Actual $actual -Expected 'High' -Message 'Start-UserLOA should use high confirmation impact.'
@@ -120,14 +125,24 @@ Describe 'Manage-UserLOA public module' {
         Assert-Equal -Actual $actual -Expected 'ManualReview' -Message 'Enabled OOO should resolve to ManualReview.'
     }
 
-    It 'returns manual review for scheduled OOO inside the threshold' {
+    It 'returns manual review for scheduled OOO far in the future' {
         $snapshot = [pscustomobject]@{
             OOOState     = 'Scheduled'
-            OOOStartTime = (Get-Date).AddHours(4)
+            OOOStartTime = (Get-Date).AddDays(30)
         }
 
         $actual = & $module { param($s) Resolve-OOOAction -Snapshot $s } $snapshot
-        Assert-Equal -Actual $actual -Expected 'ManualReview' -Message 'Scheduled OOO inside the threshold should resolve to ManualReview.'
+        Assert-Equal -Actual $actual -Expected 'ManualReview' -Message 'Scheduled OOO should resolve to ManualReview however far away it starts.'
+    }
+
+    It 'returns manual review for scheduled OOO with no start time' {
+        $snapshot = [pscustomobject]@{
+            OOOState     = 'Scheduled'
+            OOOStartTime = $null
+        }
+
+        $actual = & $module { param($s) Resolve-OOOAction -Snapshot $s } $snapshot
+        Assert-Equal -Actual $actual -Expected 'ManualReview' -Message 'Scheduled OOO without a start time should resolve to ManualReview.'
     }
 
     It 'forces OOO when ForceOOO is supplied' {
@@ -150,14 +165,23 @@ Describe 'Manage-UserLOA public module' {
         Assert-Equal -Actual $actual -Expected 'OOO is already enabled' -Message 'Enabled OOO should describe the manual-review reason.'
     }
 
-    It 'joins a base URL and relative endpoint cleanly' {
-        $actual = & $module { Join-LOAApiUrl -BaseUrl 'https://yourdomain.com/' -Endpoint '/api/users' }
-        Assert-Equal -Actual $actual -Expected 'https://yourdomain.com/api/users' -Message 'Relative API endpoints should join cleanly.'
+    It 'describes scheduled OOO without a threshold' {
+        $start = [datetime]'2026-12-01 09:00'
+        $snapshot = [pscustomobject]@{
+            OOOState     = 'Scheduled'
+            OOOStartTime = $start
+        }
+
+        $actual = & $module { param($s) Get-OOOManualReviewContext -Snapshot $s } $snapshot
+        Assert-Equal -Actual $actual -Expected "OOO is scheduled to start at $start" -Message 'Scheduled OOO should describe its start time without threshold text.'
     }
 
-    It 'preserves absolute endpoints as-is' {
-        $actual = & $module { Join-LOAApiUrl -BaseUrl 'https://yourdomain.com' -Endpoint 'https://api.example.com/users' }
-        Assert-Equal -Actual $actual -Expected 'https://api.example.com/users' -Message 'Absolute endpoints should be preserved as-is.'
+    It 'no longer ships the Google Workspace or Generic REST connectors' {
+        $removed = @('Join-LOAApiUrl', 'Invoke-LOAGoogleWorkspaceSuspension', 'Invoke-LOAGenericSaaSAction', 'Invoke-LOASaaSDeactivation', 'Invoke-LOASaaSReactivation')
+        foreach ($name in $removed) {
+            $command = & $module { param($n) Get-Command $n -ErrorAction SilentlyContinue } $name
+            Assert-Equal -Actual ($null -eq $command) -Expected $true -Message "$name should no longer exist in the module."
+        }
     }
 
     It 'polls for a converged post-change snapshot instead of relying on a fixed delay' {
