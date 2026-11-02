@@ -6,7 +6,6 @@ $exampleConfig = @{
     DomainController            = 'YOURDC.yourdomain.com'
     # Confirm this attribute is free in your environment before using it.
     OUStashAttribute            = 'extensionAttribute10'
-    OOOSchedulingThreshold      = 24
 }
 
 $exampleConfig

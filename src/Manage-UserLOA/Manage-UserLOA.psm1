@@ -18,8 +18,6 @@ $Script:Config = @{
     # licence automation or an HR sync) before deploying. Change it to any free
     # extensionAttribute (1-15) that your org has not claimed.
     OUStashAttribute       = 'extensionAttribute10'
-    # Scheduled OOO starting within this many hours needs human review.
-    OOOSchedulingThreshold = 24
 }
 
 # ---------------------------------------------------------------------------
@@ -449,18 +447,11 @@ function Resolve-OOOAction {
         [switch]$ForceOOO
     )
 
-    # Decide whether Start should overwrite OOO. Existing or soon-starting OOO
-    # may be personal/user-managed, so those cases are sent to manual review.
+    # Decide whether Start should overwrite OOO. Any enabled or scheduled OOO
+    # may be personal/user-managed, so only -ForceOOO replaces it.
     if ($ForceOOO)                            { return 'Set' }
     if ($Snapshot.OOOState -eq 'Disabled')    { return 'Set' }
     if ($Snapshot.OOOState -eq 'Unavailable') { return 'Skip' }
-    if ($Snapshot.OOOState -eq 'Enabled')     { return 'ManualReview' }
-    if ($Snapshot.OOOState -eq 'Scheduled') {
-        if (-not $Snapshot.OOOStartTime)      { return 'ManualReview' }
-        $hours = ($Snapshot.OOOStartTime - (Get-Date)).TotalHours
-        if ($hours -le $Script:Config.OOOSchedulingThreshold) { return 'ManualReview' }
-        return 'Set'
-    }
     'ManualReview'
 }
 
@@ -474,10 +465,9 @@ function Get-OOOManualReviewContext {
 
     if ($Snapshot.OOOState -eq 'Scheduled') {
         if ($Snapshot.OOOStartTime) {
-            $hours = ($Snapshot.OOOStartTime - (Get-Date)).TotalHours
-            return ("OOO is scheduled to start at {0} ({1:N1}h from now; threshold {2}h)" -f $Snapshot.OOOStartTime, $hours, $Script:Config.OOOSchedulingThreshold)
+            return "OOO is scheduled to start at $($Snapshot.OOOStartTime)"
         }
-        return 'OOO is scheduled, but the start time could not be read'
+        return 'OOO is scheduled'
     }
 
     "OOO is in state '$($Snapshot.OOOState)'"

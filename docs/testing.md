@@ -18,7 +18,7 @@ These checks are still manual and have not been revalidated in a live lab or ten
 | Manager mailbox delegation added | Manager receives expected mailbox access |
 | Delegation removed on return | Manager access removed |
 | OOO configured when disabled | Default OOO applied |
-| Existing or soon-scheduled OOO | Manual review warning shown |
+| Existing enabled or scheduled OOO | Manual review warning shown |
 | Invalid user | Script exits safely with clear error |
 | Invalid target OU | Script exits before destructive changes |
 

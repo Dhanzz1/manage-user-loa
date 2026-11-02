@@ -64,7 +64,6 @@ Edit `$Script:Config` in [Manage-UserLOA.psm1](src/Manage-UserLOA/Manage-UserLOA
 | `LOAOUDistinguishedName` | string | `OU=Users on Temporary Leave,OU=Corporate,DC=yourdomain,DC=com` | OU where disabled LOA users are moved |
 | `DomainController` | string | `YOURDC.yourdomain.com` | Domain controller used for AD reads and writes |
 | `OUStashAttribute` | string | `extensionAttribute10` | AD attribute used to store the original parent OU |
-| `OOOSchedulingThreshold` | integer | `24` | Threshold in hours that triggers manual OOO review |
 
 Check that `OUStashAttribute` is not already used in your environment before deploying.
 

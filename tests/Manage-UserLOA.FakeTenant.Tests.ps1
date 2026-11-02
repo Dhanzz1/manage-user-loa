@@ -67,4 +67,21 @@ Describe 'Manage-UserLOA against the fake tenant' {
         Assert-Equal -Actual $global:LOAFake.Mailboxes['bob.lee@yourdomain.com'].OOO.InternalMessage -Expected 'Personal OOO set by the user' -Message 'Bob''s personal OOO message should be untouched.'
         Assert-MockCalled Invoke-LOASetMailboxAutoReplyConfiguration -ModuleName Manage-UserLOA -Times 0 -Exactly -Scope It
     }
+
+    It 'fake tenant: scheduled OOO is never overwritten without ForceOOO' {
+        Initialize-FakeTenantTest
+        $ooo = $global:LOAFake.Mailboxes['jane.doe@yourdomain.com'].OOO
+        $ooo.AutoReplyState = 'Scheduled'
+        $ooo.StartTime = (Get-Date).AddDays(30)
+        $ooo.InternalMessage = 'Personal scheduled OOO'
+
+        Start-UserLOA -UserPrincipalName 'jane.doe@yourdomain.com' -Confirm:$false
+
+        Assert-Equal -Actual $ooo.AutoReplyState -Expected 'Scheduled' -Message 'Scheduled OOO should be left alone without -ForceOOO.'
+        Assert-Equal -Actual $ooo.InternalMessage -Expected 'Personal scheduled OOO' -Message 'The scheduled OOO message should be unchanged.'
+
+        Start-UserLOA -UserPrincipalName 'jane.doe@yourdomain.com' -ForceOOO -Confirm:$false
+
+        Assert-Equal -Actual $ooo.AutoReplyState -Expected 'Enabled' -Message '-ForceOOO should replace the scheduled OOO with the LOA message.'
+    }
 }

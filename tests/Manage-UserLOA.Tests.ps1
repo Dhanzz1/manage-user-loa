@@ -120,14 +120,24 @@ Describe 'Manage-UserLOA public module' {
         Assert-Equal -Actual $actual -Expected 'ManualReview' -Message 'Enabled OOO should resolve to ManualReview.'
     }
 
-    It 'returns manual review for scheduled OOO inside the threshold' {
+    It 'returns manual review for scheduled OOO far in the future' {
         $snapshot = [pscustomobject]@{
             OOOState     = 'Scheduled'
-            OOOStartTime = (Get-Date).AddHours(4)
+            OOOStartTime = (Get-Date).AddDays(30)
         }
 
         $actual = & $module { param($s) Resolve-OOOAction -Snapshot $s } $snapshot
-        Assert-Equal -Actual $actual -Expected 'ManualReview' -Message 'Scheduled OOO inside the threshold should resolve to ManualReview.'
+        Assert-Equal -Actual $actual -Expected 'ManualReview' -Message 'Scheduled OOO should resolve to ManualReview however far away it starts.'
+    }
+
+    It 'returns manual review for scheduled OOO with no start time' {
+        $snapshot = [pscustomobject]@{
+            OOOState     = 'Scheduled'
+            OOOStartTime = $null
+        }
+
+        $actual = & $module { param($s) Resolve-OOOAction -Snapshot $s } $snapshot
+        Assert-Equal -Actual $actual -Expected 'ManualReview' -Message 'Scheduled OOO without a start time should resolve to ManualReview.'
     }
 
     It 'forces OOO when ForceOOO is supplied' {
@@ -148,6 +158,17 @@ Describe 'Manage-UserLOA public module' {
 
         $actual = & $module { param($s) Get-OOOManualReviewContext -Snapshot $s } $snapshot
         Assert-Equal -Actual $actual -Expected 'OOO is already enabled' -Message 'Enabled OOO should describe the manual-review reason.'
+    }
+
+    It 'describes scheduled OOO without a threshold' {
+        $start = [datetime]'2026-12-01 09:00'
+        $snapshot = [pscustomobject]@{
+            OOOState     = 'Scheduled'
+            OOOStartTime = $start
+        }
+
+        $actual = & $module { param($s) Get-OOOManualReviewContext -Snapshot $s } $snapshot
+        Assert-Equal -Actual $actual -Expected "OOO is scheduled to start at $start" -Message 'Scheduled OOO should describe its start time without threshold text.'
     }
 
     It 'no longer ships the Google Workspace or Generic REST connectors' {
