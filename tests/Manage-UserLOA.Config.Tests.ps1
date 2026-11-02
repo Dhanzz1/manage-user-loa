@@ -125,6 +125,29 @@ Describe 'Manage-UserLOA config file' {
         Assert-Equal -Actual ($message -like "*LOAOUDistinguishedName must be a distinguished name starting with OU= or CN= (found 'Users on Temporary Leave')*") -Expected $true -Message "Got: $message"
     }
 
+    It 'rejects a SignInBlockGroupId that is a group name' {
+        $path = Write-TestConfig -Name 'groupname.psd1' -Content ($validConfig -replace '\}\s*$', "    SignInBlockGroupId = 'LOA-SignInBlocked'`n}")
+
+        $message = Get-ThrownMessage { Invoke-ImportLOAConfig -Path $path }
+
+        Assert-Equal -Actual ($message -like "*SignInBlockGroupId must be the group's object ID (a GUID) or empty (found 'LOA-SignInBlocked')*") -Expected $true -Message "Got: $message"
+    }
+
+    It 'rejects a SignInBlockGroupId that is an array' {
+        $path = Write-TestConfig -Name 'grouparray.psd1' -Content ($validConfig -replace '\}\s*$', "    SignInBlockGroupId = @('11111111-1111-1111-1111-111111111111')`n}")
+
+        $message = Get-ThrownMessage { Invoke-ImportLOAConfig -Path $path }
+
+        Assert-Equal -Actual ($message -like '*SignInBlockGroupId must be the group*') -Expected $true -Message "Got: $message"
+    }
+
+    It 'accepts a GUID or empty SignInBlockGroupId' {
+        foreach ($value in @("'11111111-1111-1111-1111-111111111111'", "''")) {
+            $path = Write-TestConfig -Name 'groupok.psd1' -Content ($validConfig -replace '\}\s*$', "    SignInBlockGroupId = $value`n}")
+            Invoke-ImportLOAConfig -Path $path
+        }
+    }
+
     It 'names the file when the psd1 has a syntax error' {
         $path = Write-TestConfig -Name 'broken.psd1' -Content '@{ DomainController = '
 

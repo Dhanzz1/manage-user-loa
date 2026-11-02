@@ -12,6 +12,7 @@
 - Reuses an existing Exchange Online session, and an existing Graph session that already has the needed scopes.
 - Looks up the user and validates the configured LOA OU or container.
 - Resolves the manager either from the supplied `ManagerUPN` or the user's AD manager.
+- Looks the user up in Entra ID and, when `SignInBlockGroupId` is set, reads the block group. A failure stops Start before anything is changed.
 
 ### State capture
 

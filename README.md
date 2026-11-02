@@ -47,8 +47,10 @@ This module turns the workflow into a repeatable, operator-driven process with b
 - `ExchangeOnlineManagement` PowerShell module
 - AD permissions to read and update target user objects and move users between the configured OUs
 - Exchange Online rights to manage mailbox permissions, recipient permissions, and automatic replies
-- Microsoft Graph PowerShell modules: `Microsoft.Graph.Authentication`, `Microsoft.Graph.Users`, `Microsoft.Graph.Users.Actions`, `Microsoft.Graph.Groups`
+- Microsoft Graph PowerShell SDK 2.x or later: `Microsoft.Graph.Authentication`, `Microsoft.Graph.Users`, `Microsoft.Graph.Users.Actions`, `Microsoft.Graph.Groups`
 - The operator signs in to Graph interactively (delegated). Scopes requested: `User.Read.All` and `User.RevokeSessions.All`, plus `GroupMember.ReadWrite.All` when `SignInBlockGroupId` is set. An existing Graph session with these scopes is reused
+
+`ExchangeOnlineManagement` and the Graph SDK each ship their own copy of the Microsoft authentication library. Some version combinations clash in one PowerShell session and fail at connect time with "Could not load file or assembly" or "Method not found". The module connects before making any change, so a clash is safe but stops the run. Keep both modules updated together, and before first real use run `Start-UserLOA ... -WhatIf` once on each operator workstation to confirm both connections work.
 
 ## Installation
 
@@ -90,6 +92,8 @@ To close that gap, set `SignInBlockGroupId`. This needs a one-time setup by an E
 3. Put the group's object ID in `SignInBlockGroupId`.
 
 Conditional Access requires Entra ID P1 or higher. The module never creates or changes Conditional Access policies.
+
+Before changing anything, Start looks the user up in Entra ID and, when the group is set, reads the group. If the user is not synced to Entra, the group ID is wrong or Graph permissions are missing, Start stops there with nothing changed.
 
 With the group set, Start adds the user to it before the AD disable, then revokes sessions. End removes the user after re-enabling the account. If adding to the group or revoking fails, Start stops at that point and tells you why. Rerunning Start after fixing the cause is safe. If End cannot remove the user from the group, it prints an `[ERR]` line and carries on, so remove them by hand.
 

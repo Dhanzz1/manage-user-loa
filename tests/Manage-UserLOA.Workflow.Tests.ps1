@@ -35,6 +35,7 @@ function Initialize-CommonWorkflowMocks {
         }
         Mock Connect-LOAServices {}
         Mock Invoke-LOASessionRevoke {}
+        Mock Get-LOAEntraUserId { 'aaaaaaaa-0000-0000-0000-000000000001' }
         Mock Assert-LOAOrganizationalUnit {}
         Mock Show-UserSummary {}
         Mock Show-LOAPreExistingWarnings {}

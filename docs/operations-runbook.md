@@ -94,6 +94,8 @@ Capture in the ticket:
   - confirm the OU path and verify the configured domain controller can resolve it
 - EXO delegation or OOO warnings
   - core AD work may still succeed; review the warning and validate manually in Exchange
+- `Microsoft Graph pre-check failed`
+  - nothing was changed; confirm the user is synced to Entra ID, `SignInBlockGroupId` is the group's object ID, and the operator has the Graph scopes, then rerun Start
 - `Sign-in block group add failed`
   - nothing after the OU stash was changed; check the Graph permissions and the group ID, then rerun Start
 - `Session revoke failed`

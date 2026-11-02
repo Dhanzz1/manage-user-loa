@@ -28,6 +28,7 @@ These checks are still manual and have not been revalidated in a live lab or ten
 | Invalid or missing config file | Command stops before connecting, listing every problem |
 | Start with `SignInBlockGroupId` set | User added to the block group before the disable; sign-in blocked at once |
 | Start without `SignInBlockGroupId` | Sessions revoked; sync-delay warning shown |
+| User not in Entra ID, or wrong group ID | Start stops at the Graph pre-check with nothing changed |
 | Revoke fails | Start stops with user disabled, not moved or delegated; rerun completes |
 | End with `SignInBlockGroupId` set | User removed from the block group |
 

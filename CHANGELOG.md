@@ -12,7 +12,8 @@ Added:
 - Config validation that reports every problem at once and warns about unknown keys.
 - Delegated Microsoft Graph connection that reuses an existing session with the needed scopes.
 - Session revoke after the AD disable. A revoke failure stops Start with the user disabled but not moved or delegated.
-- Optional `SignInBlockGroupId`: Start adds the user to a Conditional Access block group before the disable, End removes them.
+- Optional `SignInBlockGroupId`: Start adds the user to a Conditional Access block group before the disable, End removes them. The value must be the group's object ID.
+- Graph pre-check: Start resolves the user in Entra ID, and reads the block group when set, before making any change.
 - Fake tenant test harness. Workflow tests now run the real Start / End logic against sample AD, Exchange and Entra state.
 
 Unchanged: `-ManagerUPN` behaviour on both commands.

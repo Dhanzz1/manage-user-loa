@@ -287,6 +287,13 @@ function Test-LOAConfig {
         $problems += 'DomainController must be a string'
     }
 
+    # A group name instead of its object ID is an easy mistake and would only
+    # surface as a Graph error after Start had begun.
+    $blockGroup = $Config['SignInBlockGroupId']
+    if ($null -ne $blockGroup -and -not ($blockGroup -is [string] -and ($blockGroup -eq '' -or $blockGroup -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$'))) {
+        $problems += "SignInBlockGroupId must be the group's object ID (a GUID) or empty (found '$blockGroup')"
+    }
+
     $problems
 }
 
@@ -403,18 +410,20 @@ function Test-LOABlockGroupMember {
 }
 
 function Add-LOASignInBlock {
-    param([Parameter(Mandatory)][string]$UserPrincipalName)
+    param(
+        [Parameter(Mandatory)][string]$UserPrincipalName,
+        [Parameter(Mandatory)][string]$UserId
+    )
 
     # Membership of this cloud-only group is targeted by a Conditional Access
     # "Block access" policy, so it stops new sign-ins without waiting for
     # Entra Connect to sync the AD disable.
     try {
-        $userId = Get-LOAEntraUserId -UserPrincipalName $UserPrincipalName
-        if (Test-LOABlockGroupMember -UserId $userId) {
+        if (Test-LOABlockGroupMember -UserId $UserId) {
             Write-Host '  [SKIP] Already in sign-in block group' -ForegroundColor Yellow
             return
         }
-        Invoke-LOAAddGroupMember -GroupId $Script:Config.SignInBlockGroupId -DirectoryObjectId $userId
+        Invoke-LOAAddGroupMember -GroupId $Script:Config.SignInBlockGroupId -DirectoryObjectId $UserId
     } catch {
         throw "Sign-in block group add failed for ${UserPrincipalName}: $($_.Exception.Message.TrimEnd('.')). No account changes were made after the OU stash; fix the cause and rerun Start-UserLOA."
     }
@@ -440,15 +449,17 @@ function Remove-LOASignInBlock {
 }
 
 function Invoke-LOASessionRevoke {
-    param([Parameter(Mandatory)][string]$UserPrincipalName)
+    param(
+        [Parameter(Mandatory)][string]$UserPrincipalName,
+        [Parameter(Mandatory)][string]$UserId
+    )
 
     # Revoking refresh tokens forces every client to sign in again, which the
     # AD disable (once synced) or the block group then refuses.
     $result = $null
     $failure = $null
     try {
-        $userId = Get-LOAEntraUserId -UserPrincipalName $UserPrincipalName
-        $result = Invoke-LOARevokeSignInSession -UserId $userId
+        $result = Invoke-LOARevokeSignInSession -UserId $UserId
     } catch {
         $failure = $_.Exception.Message.TrimEnd('.')
     }
@@ -838,6 +849,20 @@ function Start-UserLOA {
     }
 
     $managerDisplayName = $managerObj.DisplayName
+
+    # Graph pre-check. Resolve the Entra user, and read the block group when
+    # one is configured, before anything is written. A user who is not synced
+    # to Entra, a wrong group ID or missing consent then stops Start with the
+    # account untouched instead of after the OU stash or the AD disable.
+    $hasBlockGroup = -not [string]::IsNullOrWhiteSpace($Script:Config.SignInBlockGroupId)
+    try {
+        $entraUserId = Get-LOAEntraUserId -UserPrincipalName $UserPrincipalName
+        if ($hasBlockGroup) {
+            [void](Test-LOABlockGroupMember -UserId $entraUserId)
+        }
+    } catch {
+        throw "Microsoft Graph pre-check failed for ${UserPrincipalName}: $($_.Exception.Message.TrimEnd('.')). No changes were made; check the user exists in Entra ID, the SignInBlockGroupId and your Graph permissions, then rerun Start-UserLOA."
+    }
     $managerEmail = if ($managerObj.EmailAddress) { $managerObj.EmailAddress } else { $ManagerUPN }
 
     # ---- BEFORE snapshot ----
@@ -876,9 +901,8 @@ function Start-UserLOA {
     # 1. Block Microsoft 365 sign-in (optional).
     # Runs before the AD disable so a Graph failure stops Start while the
     # account is still untouched.
-    $hasBlockGroup = -not [string]::IsNullOrWhiteSpace($Script:Config.SignInBlockGroupId)
     if ($hasBlockGroup -and $PSCmdlet.ShouldProcess($UserPrincipalName, 'Add to sign-in block group')) {
-        Add-LOASignInBlock -UserPrincipalName $UserPrincipalName
+        Add-LOASignInBlock -UserPrincipalName $UserPrincipalName -UserId $entraUserId
     }
 
     # 2. Disable account.
@@ -893,7 +917,7 @@ function Start-UserLOA {
     # A failure here stops Start: the user is disabled but not yet moved or
     # delegated, and a rerun picks up from this point.
     if ($PSCmdlet.ShouldProcess($UserPrincipalName, 'Revoke Microsoft 365 sign-in sessions')) {
-        Invoke-LOASessionRevoke -UserPrincipalName $UserPrincipalName
+        Invoke-LOASessionRevoke -UserPrincipalName $UserPrincipalName -UserId $entraUserId
         if (-not $hasBlockGroup) {
             Write-Host '  [WARN] No SignInBlockGroupId configured. The user can sign in to Microsoft 365 again until Entra Connect syncs the AD disable (about 30 minutes by default).' -ForegroundColor Yellow
         }

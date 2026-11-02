@@ -143,19 +143,61 @@ Describe 'Manage-UserLOA against the fake tenant' {
         $message = $null
         try { Start-UserLOA -UserPrincipalName 'jane.doe@yourdomain.com' -Confirm:$false } catch { $message = $_.Exception.Message }
 
+        $state = Get-LOAFakeUserState -UserPrincipalName 'jane.doe@yourdomain.com'
         Assert-Equal -Actual ($message -like 'Sign-in block group add failed*') -Expected $true -Message "Start should throw the block-group error. Got: $message"
-        Assert-Equal -Actual (Get-LOAFakeUserState -UserPrincipalName 'jane.doe@yourdomain.com').Enabled -Expected $true -Message 'Jane should still be enabled.'
+        Assert-Equal -Actual $state.Enabled -Expected $true -Message 'Jane should still be enabled.'
+        Assert-Equal -Actual $state.ParentOU -Expected 'OU=Sales,OU=Corporate,DC=yourdomain,DC=com' -Message 'Jane should not have been moved.'
+        Assert-Equal -Actual @($state.FullAccess).Count -Expected 0 -Message 'No delegation should have been granted.'
     }
 
-    It 'fake tenant: Entra user missing stops Start before the AD disable' {
+    It 'fake tenant: Entra user missing stops Start before any change' {
         Initialize-FakeTenantTest
         $global:LOAFake.Entra.Users.Remove('jane.doe@yourdomain.com')
 
         $message = $null
         try { Start-UserLOA -UserPrincipalName 'jane.doe@yourdomain.com' -Confirm:$false } catch { $message = $_.Exception.Message }
 
-        Assert-Equal -Actual ($message -like 'Sign-in block group add failed*') -Expected $true -Message "Start should throw before disabling. Got: $message"
-        Assert-Equal -Actual $global:LOAFake.ADUsers['jane.doe@yourdomain.com'].Enabled -Expected $true -Message 'Jane should still be enabled.'
+        $state = Get-LOAFakeUserState -UserPrincipalName 'jane.doe@yourdomain.com'
+        Assert-Equal -Actual ($message -like 'Microsoft Graph pre-check failed*') -Expected $true -Message "Start should throw before changing anything. Got: $message"
+        Assert-Equal -Actual $state.Enabled -Expected $true -Message 'Jane should still be enabled.'
+        Assert-Equal -Actual $state.StashedOU -Expected $null -Message 'No OU stash should be written.'
+    }
+
+    It 'fake tenant: Entra user missing without a block group stops Start before any change' {
+        Initialize-FakeTenantTest
+        $global:LOAFake.Config.SignInBlockGroupId = ''
+        $global:LOAFake.Entra.Users.Remove('jane.doe@yourdomain.com')
+
+        $message = $null
+        try { Start-UserLOA -UserPrincipalName 'jane.doe@yourdomain.com' -Confirm:$false } catch { $message = $_.Exception.Message }
+
+        $state = Get-LOAFakeUserState -UserPrincipalName 'jane.doe@yourdomain.com'
+        Assert-Equal -Actual ($message -like 'Microsoft Graph pre-check failed*') -Expected $true -Message "Start should throw before changing anything. Got: $message"
+        Assert-Equal -Actual $state.Enabled -Expected $true -Message 'Jane should not be disabled when revoke could never succeed.'
+        Assert-Equal -Actual $state.StashedOU -Expected $null -Message 'No OU stash should be written.'
+    }
+
+    It 'fake tenant: unreadable block group stops Start before any change' {
+        Initialize-FakeTenantTest
+        $global:LOAFake.Faults['GetGroupMember'] = { throw "Invalid object identifier 'LOA-SignInBlocked'." }
+
+        $message = $null
+        try { Start-UserLOA -UserPrincipalName 'jane.doe@yourdomain.com' -Confirm:$false } catch { $message = $_.Exception.Message }
+
+        Assert-Equal -Actual ($message -like 'Microsoft Graph pre-check failed*') -Expected $true -Message "Start should throw before changing anything. Got: $message"
+        Assert-Equal -Actual (Get-LOAFakeUserState -UserPrincipalName 'jane.doe@yourdomain.com').StashedOU -Expected $null -Message 'No OU stash should be written.'
+    }
+
+    It 'fake tenant: a thrown revoke error stops Start like a false result' {
+        Initialize-FakeTenantTest
+        $global:LOAFake.Config.SignInBlockGroupId = ''
+        $global:LOAFake.Faults['RevokeSignInSession'] = { throw 'Insufficient privileges to complete the operation.' }
+
+        $message = $null
+        try { Start-UserLOA -UserPrincipalName 'jane.doe@yourdomain.com' -Confirm:$false } catch { $message = $_.Exception.Message }
+
+        Assert-Equal -Actual ($message -like 'Session revoke failed*Insufficient privileges*') -Expected $true -Message "Start should throw the revoke error. Got: $message"
+        Assert-Equal -Actual (Get-LOAFakeUserState -UserPrincipalName 'jane.doe@yourdomain.com').ParentOU -Expected 'OU=Sales,OU=Corporate,DC=yourdomain,DC=com' -Message 'Jane should not have been moved.'
     }
 
     It 'fake tenant: WhatIf with a block group makes no Graph or AD writes' {
